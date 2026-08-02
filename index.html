@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>車椅子ルート・バリアマップビューワー</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+    }
+    #container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #control-panel {
+      padding: 12px 20px;
+      background-color: #2c3e50;
+      color: #ecf0f1;
+      display: flex;
+      gap: 15px;
+      align-items: center;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      z-index: 1000;
+      flex-wrap: wrap;
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    select, button {
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: none;
+      font-size: 14px;
+    }
+    button {
+      background-color: #3498db;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    button:hover {
+      background-color: #2980b9;
+    }
+    #map {
+      flex: 1;
+      width: 100%;
+    }
+    /* 凡例 */
+    .legend {
+      background: white;
+      padding: 10px 14px;
+      border-radius: 5px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.2);
+      font-size: 12px;
+      line-height: 18px;
+      color: #333;
+    }
+    .legend i {
+      width: 12px;
+      height: 12px;
+      float: left;
+      margin-right: 8px;
+      opacity: 0.8;
+      border-radius: 50%;
+    }
+  </style>
+</head>
+<body>
+
+<div id="container">
+  <div id="control-panel">
+    <div class="control-group">
+      <label for="mode-select"><strong>表示モード:</strong></label>
+      <select id="mode-select">
+        <option value="course_3">街歩きコース (Trip ID: 3)</option>
+        <option value="course_4">街歩きコース (Trip ID: 4)</option>
+        <option value="route_spatial">経路指定検索 (スタート→ゴール)</option>
+      </select>
+    </div>
+
+    <button id="btn-load">データを読み込み</button>
+    <span id="status-msg" style="color: #f1c40f; font-size: 13px;"></span>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+  // -------------------------------------------------------------------------
+  // GitHub Actions のデプロイ時に Secrets から値が置換されるプレースホルダー
+  // -------------------------------------------------------------------------
+  const SUPABASE_URL = '__SUPABASE_URL__';
+  const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
+
+  const BASE_URL = `${SUPABASE_URL}/functions/v1/get-viewer-data`;
+
+  // 地図の初期化（福岡市周辺を中心）
+  const map = L.map('map').setView([33.5895, 130.3990], 16);
+
+  // 1. 地図タイルの設定（OpenStreetMap ＆ 地理院タイル）
+  const osmTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  });
+
+  const gsiStandardTile = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+  });
+
+  const gsiPhotoTile = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+    maxZoom: 18,
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+  });
+
+  // デフォルトで OpenStreetMap を表示
+  osmTile.addTo(map);
+
+  // タイル切り替えコントロールの追加（右上に配置）
+  const baseMaps = {
+    "OpenStreetMap (デフォルト)": osmTile,
+    "国土地理院 (標準地図)": gsiStandardTile,
+    "国土地理院 (全国最新写真)": gsiPhotoTile
+  };
+  L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
+
+  // 描画用レイヤーグループ
+  const dataLayerGroup = L.layerGroup().addTo(map);
+
+  // 2. データの取得と描画関数
+  async function loadData() {
+    const mode = document.getElementById('mode-select').value;
+    const statusMsg = document.getElementById('status-msg');
+    
+    // ローカル開発環境などプレースホルダーが置換されていない場合の安全チェック
+    if (SUPABASE_URL.startsWith('__')) {
+      alert('SupabaseのURLが設定されていません。GitHub Secretsの設定を確認してください。');
+      return;
+    }
+
+    // 画面の初期化
+    dataLayerGroup.clearLayers();
+    statusMsg.innerText = 'データを取得中...';
+
+    let requestUrl = '';
+
+    if (mode === 'course_3') {
+      requestUrl = `${BASE_URL}?mode=course&trip_id=3`;
+    } else if (mode === 'course_4') {
+      requestUrl = `${BASE_URL}?mode=course&trip_id=4`;
+    } else if (mode === 'route_spatial') {
+      requestUrl = `${BASE_URL}?mode=route&start_lat=33.5893&start_lon=130.3979&end_lat=33.5897&end_lon=130.4001`;
+    }
+
+    try {
+      // 認証ヘッダーを付与してリクエスト
+      const response = await fetch(requestUrl, {
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'apikey': SUPABASE_ANON_KEY
+        }
+      });
+
+      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+      const json = await response.json();
+
+      statusMsg.innerText = '';
+
+      // A. コースデータ（mode=course）の表示処理
+      if (json.route || json.barriers) {
+        renderCourseData(json);
+      } 
+      // B. 経路データ（mode=route）の表示処理
+      else if (json.data) {
+        renderRouteSpatialData(json.data);
+      } else {
+        alert('該当するデータが存在しませんでした。');
+      }
+
+    } catch (err) {
+      console.error(err);
+      statusMsg.innerText = 'エラーが発生しました。';
+      alert(`データの取得に失敗しました: ${err.message}`);
+    }
+  }
+
+  // A. 街歩きコースの描画
+  function renderCourseData(data) {
+    const latLngs = [];
+
+    // ルート描画
+    if (data.route && data.route.length > 0) {
+      data.route.forEach(pt => {
+        if (pt.coordinates && pt.coordinates.length === 2) {
+          latLngs.push(pt.coordinates); // [lat, lon]
+        }
+      });
+
+      if (latLngs.length > 0) {
+        const polyline = L.polyline(latLngs, { color: '#2980b9', weight: 5, opacity: 0.8 });
+        dataLayerGroup.addLayer(polyline);
+        map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+      }
+    }
+
+    // バリア（段差・衝撃）のピン描画
+    if (data.barriers && data.barriers.length > 0) {
+      data.barriers.forEach(b => {
+        if (b.coordinates) {
+          const marker = L.circleMarker(b.coordinates, {
+            radius: 7,
+            fillColor: '#e74c3c',
+            color: '#ffffff',
+            weight: 2,
+            fillOpacity: 0.9
+          }).bindPopup(`<b>バリア情報</b><br>タイプ: ${b.type}<br>衝撃度: ${b.intensity}`);
+          
+          dataLayerGroup.addLayer(marker);
+        }
+      });
+    }
+  }
+
+  // B. 空間経路検索結果の描画
+  function renderRouteSpatialData(items) {
+    const latLngs = [];
+
+    items.forEach(pt => {
+      if (pt.lat && pt.lon) {
+        const pos = [pt.lat, pt.lon];
+        latLngs.push(pos);
+
+        // 経路付近のバリアを描画
+        if (pt.near_barriers && pt.near_barriers.length > 0) {
+          pt.near_barriers.forEach(b => {
+            const marker = L.circleMarker([b.lat, b.lon], {
+              radius: 6,
+              fillColor: '#e67e22',
+              color: '#ffffff',
+              weight: 1,
+              fillOpacity: 0.9
+            }).bindPopup(`<b>周辺バリア</b><br>タイプ: ${b.type}<br>強度: ${b.intensity}`);
+            
+            dataLayerGroup.addLayer(marker);
+          });
+        }
+      }
+    });
+
+    if (latLngs.length > 0) {
+      const polyline = L.polyline(latLngs, { color: '#27ae60', weight: 6, opacity: 0.8 });
+      dataLayerGroup.addLayer(polyline);
+      map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+    }
+  }
+
+  // イベント設定
+  document.getElementById('btn-load').addEventListener('click', loadData);
+
+  // 初回読み込み
+  loadData();
+
+  // 凡例コントロールの追加（右下）
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function () {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML += '<b>表示凡例</b><br>';
+    div.innerHTML += '<i style="background: #2980b9;"></i>走行ルート<br>';
+    div.innerHTML += '<i style="background: #27ae60;"></i>検索経路<br>';
+    div.innerHTML += '<i style="background: #e74c3c;"></i>バリア（段差等）<br>';
+    return div;
+  };
+  legend.addTo(map);
+</script>
+
+</body>
+</html>
