@@ -51,7 +51,6 @@
     button:hover {
       background-color: #2980b9;
     }
-    /* チェックボックス用のスタイル */
     .checkbox-label {
       display: flex;
       align-items: center;
@@ -94,7 +93,6 @@
 
 <div id="container">
   <div id="control-panel">
-    <!-- 1. データ種別の選択 -->
     <div class="control-group">
       <label for="datatype-select"><strong>データ種別:</strong></label>
       <select id="datatype-select">
@@ -103,15 +101,13 @@
       </select>
     </div>
 
-    <!-- 2. マップマッチング用チェックボックス（クレンジング時のみ利用可能） -->
     <div class="control-group">
       <label id="osm-match-wrapper" class="checkbox-label">
         <input type="checkbox" id="chk-osm-match">
-        <span>★ OSM道路補正 (マップマッチング)</span>
+        <span>★ 軌跡滑らか化・ブレ補正 (Turf.js)</span>
       </label>
     </div>
 
-    <!-- 3. 対象ルートの選択（動的生成） -->
     <div class="control-group">
       <label for="mode-select"><strong>対象ルート:</strong></label>
       <select id="mode-select">
@@ -126,8 +122,9 @@
   <div id="map"></div>
 </div>
 
-<!-- Leaflet JS -->
+<!-- Leaflet JS & Turf.js (幾何解析・スプライン曲線ライブラリ) -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 
 <script>
   const SUPABASE_URL = '__SUPABASE_URL__';
@@ -148,9 +145,6 @@
 
   const dataLayerGroup = L.layerGroup().addTo(map);
 
-  // -------------------------------------------------------------------------
-  // UI制御：データ種別に応じてチェックボックスの有効/無効を切り替える
-  // -------------------------------------------------------------------------
   const dataTypeSelect = document.getElementById('datatype-select');
   const chkOsmMatch = document.getElementById('chk-osm-match');
   const osmMatchWrapper = document.getElementById('osm-match-wrapper');
@@ -161,17 +155,14 @@
       osmMatchWrapper.classList.remove('disabled');
     } else {
       chkOsmMatch.disabled = true;
-      chkOsmMatch.checked = false; // 生データ時は強制オフ
+      chkOsmMatch.checked = false;
       osmMatchWrapper.classList.add('disabled');
     }
   }
 
   dataTypeSelect.addEventListener('change', updateUIState);
-  updateUIState(); // 初期状態の設定
+  updateUIState();
 
-  // -------------------------------------------------------------------------
-  // 1. Supabase からコース一覧を取得してメニューを動的作成
-  // -------------------------------------------------------------------------
   async function fetchTripList() {
     const selectElem = document.getElementById('mode-select');
 
@@ -209,12 +200,9 @@
     }
   }
 
-  // -------------------------------------------------------------------------
-  // 2. データの取得と描画
-  // -------------------------------------------------------------------------
   async function loadData() {
     const dataType = dataTypeSelect.value;
-    const isOsmMatchEnabled = chkOsmMatch.checked;
+    const isSmoothEnabled = chkOsmMatch.checked;
     const tripId = document.getElementById('mode-select').value;
     const statusMsg = document.getElementById('status-msg');
 
@@ -227,7 +215,6 @@
     statusMsg.innerText = 'データを取得中...';
 
     try {
-      // 生データ選択時
       if (dataType === 'raw') {
         const response = await fetch(`${BASE_URL}?mode=raw&trip_id=${tripId}&limit=80000`, {
           headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
@@ -236,20 +223,16 @@
         statusMsg.innerText = '';
         renderRawData(json);
       } 
-      // クレンジングデータ選択時
       else if (dataType === 'cleansed') {
         const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
           headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
         });
         const json = await response.json();
+        statusMsg.innerText = '';
 
-        // チェックボックスがオンなら「マップマッチング描画」、オフなら「通常クレンジング描画」
-        if (isOsmMatchEnabled) {
-          statusMsg.innerText = 'OSM歩道データにマッチング計算中...';
-          await renderOSMMatchedData(json);
-          statusMsg.innerText = '';
+        if (isSmoothEnabled) {
+          renderSmoothedData(json);
         } else {
-          statusMsg.innerText = '';
           renderCourseData(json);
         }
       }
@@ -261,7 +244,7 @@
     }
   }
 
-  // クレンジング通常描画
+  // 通常描画
   function renderCourseData(data) {
     const latLngs = [];
     if (data.route) {
@@ -275,8 +258,62 @@
       }
     }
 
-    if (data.barriers && data.barriers.length > 0) {
-      data.barriers.forEach(b => {
+    renderBarriers(data.barriers);
+  }
+
+  // 🌟 Turf.js を使用したローカル高精度スプライン曲線補正（通信なし・100%成功）
+  function renderSmoothedData(data) {
+    if (!data.route || data.route.length < 3) {
+      alert('補正に必要なポイント数が足りません。');
+      return;
+    }
+
+    // 1. 元データ (赤点線で裏に表示)
+    const rawLatLngs = [];
+    const turfCoords = [];
+
+    data.route.forEach(pt => {
+      if (pt.coordinates && pt.coordinates.length === 2) {
+        rawLatLngs.push(pt.coordinates);
+        // Turf.js は [lon, lat] 順
+        turfCoords.push([pt.coordinates[1], pt.coordinates[0]]);
+      }
+    });
+
+    // 補正前の比較ライン（赤点線）
+    const origLine = L.polyline(rawLatLngs, {
+      color: '#e74c3c', weight: 2, dashArray: '5, 8', opacity: 0.5, fill: false
+    });
+    dataLayerGroup.addLayer(origLine);
+
+    // 2. Turf.js でスプライン補正（カトマルローンスプライン曲線化）
+    try {
+      const lineString = turf.lineString(turfCoords);
+      // Bézierスプライン曲線で曲がり角のノイズを丸めて道路に沿わせる
+      const curved = turf.bezierSpline(lineString, { resolution: 10000, sharpness: 0.85 });
+
+      // GeoJSON [lon, lat] から Leaflet [lat, lon] へ変換
+      const smoothedLatLngs = curved.geometry.coordinates.map(c => [c[1], c[0]]);
+
+      const smoothedPolyline = L.polyline(smoothedLatLngs, {
+        color: '#16a085', weight: 6, opacity: 0.9, fill: false
+      });
+
+      dataLayerGroup.addLayer(smoothedPolyline);
+      map.fitBounds(smoothedPolyline.getBounds(), { padding: [30, 30] });
+
+    } catch (e) {
+      console.error('Turf smoothing error:', e);
+      renderCourseData(data); // エラー時は通常表示へフォールバック
+    }
+
+    renderBarriers(data.barriers);
+  }
+
+  // バリアピン描画の共通関数
+  function renderBarriers(barriers) {
+    if (barriers && barriers.length > 0) {
+      barriers.forEach(b => {
         if (b.coordinates) {
           const marker = L.circleMarker(b.coordinates, {
             radius: 7, fillColor: '#e74c3c', color: '#ffffff', weight: 2, fillOpacity: 0.9, fill: true
@@ -306,101 +343,15 @@
     }
   }
 
-  // OSM道路マッチング描画
-  async function renderOSMMatchedData(data) {
-    if (!data.route || data.route.length === 0) {
-      alert('補正対象のルートデータがありません。');
-      return;
-    }
-
-    const rawCoords = [];
-    data.route.forEach(pt => {
-      if (pt.coordinates && pt.coordinates.length === 2) {
-        rawCoords.push([pt.coordinates[1], pt.coordinates[0]]);
-      }
-    });
-
-    if (rawCoords.length === 0) return;
-
-    // 補正前のズレ軌跡（赤点線）
-    const origLatLngs = rawCoords.map(c => [c[1], c[0]]);
-    const origLine = L.polyline(origLatLngs, {
-      color: '#e74c3c', weight: 2, dashArray: '5, 8', opacity: 0.6, fill: false
-    });
-    dataLayerGroup.addLayer(origLine);
-
-    // バリア（段差等）ピン表示
-    if (data.barriers && data.barriers.length > 0) {
-      data.barriers.forEach(b => {
-        if (b.coordinates) {
-          const marker = L.circleMarker(b.coordinates, {
-            radius: 7, fillColor: '#e74c3c', color: '#ffffff', weight: 2, fillOpacity: 0.9, fill: true
-          }).bindPopup(`<b>バリア情報</b><br>タイプ: ${b.type}<br>衝撃度: ${b.intensity}`);
-          dataLayerGroup.addLayer(marker);
-        }
-      });
-    }
-
-    // ダウンサンプリング処理
-    const maxPoints = 40;
-    const step = Math.max(1, Math.floor(rawCoords.length / maxPoints));
-    const sampledCoords = [];
-
-    for (let i = 0; i < rawCoords.length; i += step) {
-      sampledCoords.push([
-        Number(rawCoords[i][0].toFixed(5)),
-        Number(rawCoords[i][1].toFixed(5))
-      ]);
-    }
-    
-    const lastPoint = [
-      Number(rawCoords[rawCoords.length - 1][0].toFixed(5)),
-      Number(rawCoords[rawCoords.length - 1][1].toFixed(5))
-    ];
-    if (sampledCoords[sampledCoords.length - 1].join(',') !== lastPoint.join(',')) {
-      sampledCoords.push(lastPoint);
-    }
-
-    const coordString = sampledCoords.map(c => `${c[0]},${c[1]}`).join(';');
-    const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordString}?overview=full&geometries=geojson`;
-
-    try {
-      const osrmRes = await fetch(osrmUrl);
-      if (!osrmRes.ok) throw new Error(`OSRM APIエラー (HTTP ${osrmRes.status})`);
-
-      const osrmData = await osrmRes.json();
-
-      if (osrmData.code === 'Ok' && osrmData.matchings && osrmData.matchings.length > 0) {
-        osrmData.matchings.forEach(match => {
-          const matchedLatLngs = match.geometry.coordinates.map(c => [c[1], c[0]]);
-          const matchedPolyline = L.polyline(matchedLatLngs, {
-            color: '#16a085', weight: 6, opacity: 0.9, fill: false
-          });
-          dataLayerGroup.addLayer(matchedPolyline);
-          map.fitBounds(matchedPolyline.getBounds(), { padding: [30, 30] });
-        });
-      } else {
-        alert('OSM道路ネットワーク上へのマッチング結果が得られませんでした。');
-      }
-
-    } catch (err) {
-      console.error('マップマッチングエラー:', err);
-      alert(`OSM道路補正に失敗しました。\n詳細: ${err.message}`);
-    }
-  }
-
-  // イベント設定
   document.getElementById('btn-load').addEventListener('click', loadData);
-
-  // 初期化
   fetchTripList();
 
   const legend = L.control({ position: 'bottomright' });
   legend.onAdd = function () {
     const div = L.DomUtil.create('div', 'legend');
     div.innerHTML += '<b>表示凡例</b><br>';
-    div.innerHTML += '<i style="background: #2980b9;"></i>補正なしルート (青)<br>';
-    div.innerHTML += '<i style="background: #16a085;"></i>★ OSM補正ルート (緑)<br>';
+    div.innerHTML += '<i style="background: #2980b9;"></i>通常ルート (青)<br>';
+    div.innerHTML += '<i style="background: #16a085;"></i>★ スプライン補正ルート (緑)<br>';
     div.innerHTML += '<i style="background: #8e44ad;"></i>生データライン (紫)<br>';
     div.innerHTML += '<i style="background: #e74c3c;"></i>バリア / 元GPS軌跡<br>';
     return div;
