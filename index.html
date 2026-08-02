@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>車椅子ルート・バリアマップビューワー</title>
@@ -80,8 +79,18 @@
 
 <div id="container">
   <div id="control-panel">
+    <!-- データタイプの切り替え -->
     <div class="control-group">
-      <label for="mode-select"><strong>表示モード:</strong></label>
+      <label for="datatype-select"><strong>データ種別:</strong></label>
+      <select id="datatype-select">
+        <option value="cleansed">クレンジングデータ (表示軽量化)</option>
+        <option value="raw">生データ (Raw Sensor Logs)</option>
+      </select>
+    </div>
+
+    <!-- コース・経路の選択 -->
+    <div class="control-group">
+      <label for="mode-select"><strong>対象ルート:</strong></label>
       <select id="mode-select">
         <option value="course_3">街歩きコース (Trip ID: 3)</option>
         <option value="course_4">街歩きコース (Trip ID: 4)</option>
@@ -143,10 +152,11 @@
 
   // 2. データの取得と描画関数
   async function loadData() {
+    const dataType = document.getElementById('datatype-select').value;
     const mode = document.getElementById('mode-select').value;
     const statusMsg = document.getElementById('status-msg');
     
-    // ローカル開発環境などプレースホルダーが置換されていない場合の安全チェック
+    // 安全チェック
     if (SUPABASE_URL.startsWith('__')) {
       alert('SupabaseのURLが設定されていません。GitHub Secretsの設定を確認してください。');
       return;
@@ -158,16 +168,30 @@
 
     let requestUrl = '';
 
-    if (mode === 'course_3') {
-      requestUrl = `${BASE_URL}?mode=course&trip_id=3`;
-    } else if (mode === 'course_4') {
-      requestUrl = `${BASE_URL}?mode=course&trip_id=4`;
-    } else if (mode === 'route_spatial') {
-      requestUrl = `${BASE_URL}?mode=route&start_lat=33.5893&start_lon=130.3979&end_lat=33.5897&end_lon=130.4001`;
+    // A. 生データ（Raw）モードの場合
+    if (dataType === 'raw') {
+      if (mode === 'course_3') {
+        requestUrl = `${BASE_URL}?mode=raw&trip_id=3&limit=3000`;
+      } else if (mode === 'course_4') {
+        requestUrl = `${BASE_URL}?mode=raw&trip_id=4&limit=3000`;
+      } else if (mode === 'route_spatial') {
+        alert('生データモードでの経路指定検索は未対応です。街歩きコースを選択してください。');
+        statusMsg.innerText = '';
+        return;
+      }
+    } 
+    // B. クレンジング（Cleansed）モードの場合
+    else {
+      if (mode === 'course_3') {
+        requestUrl = `${BASE_URL}?mode=course&trip_id=3`;
+      } else if (mode === 'course_4') {
+        requestUrl = `${BASE_URL}?mode=course&trip_id=4`;
+      } else if (mode === 'route_spatial') {
+        requestUrl = `${BASE_URL}?mode=route&start_lat=33.5893&start_lon=130.3979&end_lat=33.5897&end_lon=130.4001`;
+      }
     }
 
     try {
-      // 認証ヘッダーを付与してリクエスト
       const response = await fetch(requestUrl, {
         headers: {
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
@@ -180,15 +204,17 @@
 
       statusMsg.innerText = '';
 
-      // A. コースデータ（mode=course）の表示処理
-      if (json.route || json.barriers) {
-        renderCourseData(json);
-      } 
-      // B. 経路データ（mode=route）の表示処理
-      else if (json.data) {
-        renderRouteSpatialData(json.data);
+      // レンダリング切り替え
+      if (dataType === 'raw') {
+        renderRawData(json);
       } else {
-        alert('該当するデータが存在しませんでした。');
+        if (json.route || json.barriers) {
+          renderCourseData(json);
+        } else if (json.data) {
+          renderRouteSpatialData(json.data);
+        } else {
+          alert('該当するデータが存在しませんでした。');
+        }
       }
 
     } catch (err) {
@@ -198,15 +224,14 @@
     }
   }
 
-  // A. 街歩きコースの描画
+  // 1. クレンジングデータ（コース）の描画
   function renderCourseData(data) {
     const latLngs = [];
 
-    // ルート描画
     if (data.route && data.route.length > 0) {
       data.route.forEach(pt => {
         if (pt.coordinates && pt.coordinates.length === 2) {
-          latLngs.push(pt.coordinates); // [lat, lon]
+          latLngs.push(pt.coordinates);
         }
       });
 
@@ -217,7 +242,6 @@
       }
     }
 
-    // バリア（段差・衝撃）のピン描画
     if (data.barriers && data.barriers.length > 0) {
       data.barriers.forEach(b => {
         if (b.coordinates) {
@@ -227,7 +251,7 @@
             color: '#ffffff',
             weight: 2,
             fillOpacity: 0.9
-          }).bindPopup(`<b>バリア情報</b><br>タイプ: ${b.type}<br>衝撃度: ${b.intensity}`);
+          }).bindPopup(`<b>バリア情報 (クレンジング)</b><br>タイプ: ${b.type}<br>衝撃度: ${b.intensity}`);
           
           dataLayerGroup.addLayer(marker);
         }
@@ -235,7 +259,7 @@
     }
   }
 
-  // B. 空間経路検索結果の描画
+  // 2. 空間経路検索結果の描画
   function renderRouteSpatialData(items) {
     const latLngs = [];
 
@@ -244,7 +268,6 @@
         const pos = [pt.lat, pt.lon];
         latLngs.push(pos);
 
-        // 経路付近のバリアを描画
         if (pt.near_barriers && pt.near_barriers.length > 0) {
           pt.near_barriers.forEach(b => {
             const marker = L.circleMarker([b.lat, b.lon], {
@@ -268,6 +291,57 @@
     }
   }
 
+  // 3. 生データ（Raw Logs）の描画
+  function renderRawData(data) {
+    if (!data.raw_logs || data.raw_logs.length === 0) {
+      alert('生データが見つかりませんでした。');
+      return;
+    }
+
+    const latLngs = [];
+
+    data.raw_logs.forEach(log => {
+      // GPSがFIXであり、有効な緯度経度を持つデータのみプロット
+      if (log.gps_status === 'FIX' && log.lat && log.lon) {
+        const pos = [log.lat, log.lon];
+        latLngs.push(pos);
+
+        // 垂直衝撃 (az) の大きさに基づいてポイントを可視化
+        const azVal = Math.abs(log.az || 0);
+        let color = '#9b59b6'; // 紫色 (生データのプロット)
+        let radius = 3;
+
+        // 強い衝撃（1.2G以上）があったポイントは色を変えて表示
+        if (azVal >= 1.2) {
+          color = '#e74c3c';
+          radius = 6;
+        }
+
+        const circle = L.circleMarker(pos, {
+          radius: radius,
+          fillColor: color,
+          color: '#ffffff',
+          weight: 0.5,
+          fillOpacity: 0.7
+        }).bindPopup(`
+          <b>生データログ (ID: ${log.log_id})</b><br>
+          時刻: ${log.jst}<br>
+          垂直加速度 (az): ${log.az} G<br>
+          加速度 (ax, ay): ${log.ax}, ${log.ay}<br>
+          GPS状態: ${log.gps_status} (衛星数: ${log.sat})
+        `);
+
+        dataLayerGroup.addLayer(circle);
+      }
+    });
+
+    if (latLngs.length > 0) {
+      const polyline = L.polyline(latLngs, { color: '#8e44ad', weight: 3, opacity: 0.6, dashArray: '4, 4' });
+      dataLayerGroup.addLayer(polyline);
+      map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+    }
+  }
+
   // イベント設定
   document.getElementById('btn-load').addEventListener('click', loadData);
 
@@ -279,9 +353,9 @@
   legend.onAdd = function () {
     const div = L.DomUtil.create('div', 'legend');
     div.innerHTML += '<b>表示凡例</b><br>';
-    div.innerHTML += '<i style="background: #2980b9;"></i>走行ルート<br>';
-    div.innerHTML += '<i style="background: #27ae60;"></i>検索経路<br>';
-    div.innerHTML += '<i style="background: #e74c3c;"></i>バリア（段差等）<br>';
+    div.innerHTML += '<i style="background: #2980b9;"></i>走行ルート (クレンジング)<br>';
+    div.innerHTML += '<i style="background: #8e44ad;"></i>生データライン (Raw)<br>';
+    div.innerHTML += '<i style="background: #e74c3c;"></i>バリア / 衝撃検知<br>';
     return div;
   };
   legend.addTo(map);
