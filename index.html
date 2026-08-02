@@ -171,16 +171,16 @@
     // A. 生データ（Raw）モードの場合
     if (dataType === 'raw') {
       if (mode === 'course_3') {
-        requestUrl = `${BASE_URL}?mode=raw&trip_id=3&limit=3000`;
+        // 2時間分をカバーする 80,000 件を指定
+        requestUrl = `${BASE_URL}?mode=raw&trip_id=3&limit=80000`;
       } else if (mode === 'course_4') {
-        requestUrl = `${BASE_URL}?mode=raw&trip_id=4&limit=3000`;
+        requestUrl = `${BASE_URL}?mode=raw&trip_id=4&limit=80000`;
       } else if (mode === 'route_spatial') {
         alert('生データモードでの経路指定検索は未対応です。街歩きコースを選択してください。');
         statusMsg.innerText = '';
         return;
       }
-    } 
-    // B. クレンジング（Cleansed）モードの場合
+    }    // B. クレンジング（Cleansed）モードの場合
     else {
       if (mode === 'course_3') {
         requestUrl = `${BASE_URL}?mode=course&trip_id=3`;
