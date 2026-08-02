@@ -291,7 +291,7 @@
     }
   }
 
-  // 3. 生データ（Raw Logs）の描画
+  // 3. 生データ（Raw Logs）の描画（塗りつぶし防止・純粋なライン表示）
   function renderRawData(data) {
     if (!data.raw_logs || data.raw_logs.length === 0) {
       alert('生データが見つかりませんでした。');
@@ -300,48 +300,55 @@
 
     const latLngs = [];
 
+    // 時系列順に座標を抽出
     data.raw_logs.forEach(log => {
-      // GPSがFIXであり、有効な緯度経度を持つデータのみプロット
       if (log.gps_status === 'FIX' && log.lat && log.lon) {
-        const pos = [log.lat, log.lon];
-        latLngs.push(pos);
-
-        // 垂直衝撃 (az) の大きさに基づいてポイントを可視化
-        const azVal = Math.abs(log.az || 0);
-        let color = '#9b59b6'; // 紫色 (生データのプロット)
-        let radius = 3;
-
-        // 強い衝撃（1.2G以上）があったポイントは色を変えて表示
-        if (azVal >= 1.2) {
-          color = '#e74c3c';
-          radius = 6;
-        }
-
-        const circle = L.circleMarker(pos, {
-          radius: radius,
-          fillColor: color,
-          color: '#ffffff',
-          weight: 0.5,
-          fillOpacity: 0.7
-        }).bindPopup(`
-          <b>生データログ (ID: ${log.log_id})</b><br>
-          時刻: ${log.jst}<br>
-          垂直加速度 (az): ${log.az} G<br>
-          加速度 (ax, ay): ${log.ax}, ${log.ay}<br>
-          GPS状態: ${log.gps_status} (衛星数: ${log.sat})
-        `);
-
-        dataLayerGroup.addLayer(circle);
+        latLngs.push([log.lat, log.lon]);
       }
     });
 
-    if (latLngs.length > 0) {
-      const polyline = L.polyline(latLngs, { color: '#8e44ad', weight: 3, opacity: 0.6, dashArray: '4, 4' });
-      dataLayerGroup.addLayer(polyline);
-      map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+    if (latLngs.length === 0) {
+      alert('有効な位置情報(GPS FIX)が含まれる生データがありませんでした。');
+      return;
     }
-  }
 
+    // ① 経路を1本の「線（Polyline）」だけで繋いで描画（塗りつぶしなし）
+    const rawPolyline = L.polyline(latLngs, {
+      color: '#8e44ad',  // 綺麗な紫色
+      weight: 3,         // 線の太さ
+      opacity: 0.85,     // 線の不透明度
+      smoothFactor: 1.0  // パフォーマンス最適化
+    });
+
+    dataLayerGroup.addLayer(rawPolyline);
+
+    // ② 衝撃が大きかったポイント（バリア候補）のみをピンポイントで点描画（面の原因になる全点描画を廃止）
+    data.raw_logs.forEach(log => {
+      if (log.gps_status === 'FIX' && log.lat && log.lon) {
+        const azVal = Math.abs(log.az || 0);
+        // 1.2G以上の大きな衝撃があった箇所だけをプロット
+        if (azVal >= 1.2) {
+          const marker = L.circleMarker([log.lat, log.lon], {
+            radius: 5,
+            fillColor: '#e74c3c', // 赤色
+            color: '#ffffff',
+            weight: 1,
+            fillOpacity: 0.9
+          }).bindPopup(`
+            <b>生データ衝撃検知 (ID: ${log.log_id})</b><br>
+            時刻: ${log.jst}<br>
+            垂直加速度 (az): ${log.az} G<br>
+            加速度 (ax, ay): ${log.ax}, ${log.ay}
+          `);
+          dataLayerGroup.addLayer(marker);
+        }
+      }
+    });
+
+    // 抽出した経路全体が収まるように地図枠をズーム調整
+    map.fitBounds(rawPolyline.getBounds(), { padding: [30, 30] });
+  }
+  
   // イベント設定
   document.getElementById('btn-load').addEventListener('click', loadData);
 
