@@ -51,6 +51,22 @@
     button:hover {
       background-color: #2980b9;
     }
+    /* チェックボックス用のスタイル */
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 14px;
+      cursor: pointer;
+      user-select: none;
+      padding: 4px 8px;
+      background-color: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+    .checkbox-label.disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
     #map {
       flex: 1;
       width: 100%;
@@ -78,17 +94,24 @@
 
 <div id="container">
   <div id="control-panel">
-    <!-- データ種別 -->
+    <!-- 1. データ種別の選択 -->
     <div class="control-group">
-      <label for="datatype-select"><strong>データ種別 (道路補正):</strong></label>
+      <label for="datatype-select"><strong>データ種別:</strong></label>
       <select id="datatype-select">
-        <option value="cleansed">【補正なし】クレンジングデータ (GPSそのまま)</option>
-        <option value="osm_matched">【補正あり】OSM道路補正 (歩道を自動吸着)</option>
+        <option value="cleansed">クレンジングデータ (平滑化済み)</option>
         <option value="raw">生データ (Raw Sensor Logs)</option>
       </select>
     </div>
 
-    <!-- 動的に生成される対象ルートメニュー -->
+    <!-- 2. マップマッチング用チェックボックス（クレンジング時のみ利用可能） -->
+    <div class="control-group">
+      <label id="osm-match-wrapper" class="checkbox-label">
+        <input type="checkbox" id="chk-osm-match">
+        <span>★ OSM道路補正 (マップマッチング)</span>
+      </label>
+    </div>
+
+    <!-- 3. 対象ルートの選択（動的生成） -->
     <div class="control-group">
       <label for="mode-select"><strong>対象ルート:</strong></label>
       <select id="mode-select">
@@ -126,7 +149,28 @@
   const dataLayerGroup = L.layerGroup().addTo(map);
 
   // -------------------------------------------------------------------------
-  // 🌟 1. ページロード時に Supabase からコース一覧を取得してメニューを動的作成
+  // UI制御：データ種別に応じてチェックボックスの有効/無効を切り替える
+  // -------------------------------------------------------------------------
+  const dataTypeSelect = document.getElementById('datatype-select');
+  const chkOsmMatch = document.getElementById('chk-osm-match');
+  const osmMatchWrapper = document.getElementById('osm-match-wrapper');
+
+  function updateUIState() {
+    if (dataTypeSelect.value === 'cleansed') {
+      chkOsmMatch.disabled = false;
+      osmMatchWrapper.classList.remove('disabled');
+    } else {
+      chkOsmMatch.disabled = true;
+      chkOsmMatch.checked = false; // 生データ時は強制オフ
+      osmMatchWrapper.classList.add('disabled');
+    }
+  }
+
+  dataTypeSelect.addEventListener('change', updateUIState);
+  updateUIState(); // 初期状態の設定
+
+  // -------------------------------------------------------------------------
+  // 1. Supabase からコース一覧を取得してメニューを動的作成
   // -------------------------------------------------------------------------
   async function fetchTripList() {
     const selectElem = document.getElementById('mode-select');
@@ -144,18 +188,16 @@
       if (!response.ok) throw new Error('コース一覧の取得に失敗しました');
       const json = await response.json();
 
-      selectElem.innerHTML = ''; // クリア
+      selectElem.innerHTML = '';
 
       if (json.trips && json.trips.length > 0) {
         json.trips.forEach(t => {
           const opt = document.createElement('option');
           opt.value = t.trip_id;
-          // 表示ラベル（例: 街歩きコース (Trip ID: 3)）
           opt.textContent = `街歩きコース (Trip ID: ${t.trip_id})`;
           selectElem.appendChild(opt);
         });
 
-        // 初回ロードを実行
         loadData();
       } else {
         selectElem.innerHTML = '<option value="">コースが見つかりません</option>';
@@ -168,10 +210,11 @@
   }
 
   // -------------------------------------------------------------------------
-  // 2. データの描画処理
+  // 2. データの取得と描画
   // -------------------------------------------------------------------------
   async function loadData() {
-    const dataType = document.getElementById('datatype-select').value;
+    const dataType = dataTypeSelect.value;
+    const isOsmMatchEnabled = chkOsmMatch.checked;
     const tripId = document.getElementById('mode-select').value;
     const statusMsg = document.getElementById('status-msg');
 
@@ -184,32 +227,31 @@
     statusMsg.innerText = 'データを取得中...';
 
     try {
-      if (dataType === 'cleansed') {
-        const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
-          headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
-        });
-        const json = await response.json();
-        statusMsg.innerText = '';
-        renderCourseData(json);
-      } 
-      else if (dataType === 'osm_matched') {
-        statusMsg.innerText = 'クレンジングデータ取得中...';
-        const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
-          headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
-        });
-        const json = await response.json();
-        
-        statusMsg.innerText = 'OSM歩道データにマッチング計算中...';
-        await renderOSMMatchedData(json);
-        statusMsg.innerText = '';
-      }
-      else if (dataType === 'raw') {
+      // 生データ選択時
+      if (dataType === 'raw') {
         const response = await fetch(`${BASE_URL}?mode=raw&trip_id=${tripId}&limit=80000`, {
           headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
         });
         const json = await response.json();
         statusMsg.innerText = '';
         renderRawData(json);
+      } 
+      // クレンジングデータ選択時
+      else if (dataType === 'cleansed') {
+        const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
+          headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
+        });
+        const json = await response.json();
+
+        // チェックボックスがオンなら「マップマッチング描画」、オフなら「通常クレンジング描画」
+        if (isOsmMatchEnabled) {
+          statusMsg.innerText = 'OSM歩道データにマッチング計算中...';
+          await renderOSMMatchedData(json);
+          statusMsg.innerText = '';
+        } else {
+          statusMsg.innerText = '';
+          renderCourseData(json);
+        }
       }
 
     } catch (err) {
@@ -219,7 +261,7 @@
     }
   }
 
-  // クレンジング描画
+  // クレンジング通常描画
   function renderCourseData(data) {
     const latLngs = [];
     if (data.route) {
@@ -264,7 +306,7 @@
     }
   }
 
-  // OSM道路マッチング
+  // OSM道路マッチング描画
   async function renderOSMMatchedData(data) {
     if (!data.route || data.route.length === 0) {
       alert('補正対象のルートデータがありません。');
@@ -278,13 +320,45 @@
       }
     });
 
-    const sampledCoords = [];
-    const step = Math.max(1, Math.floor(rawCoords.length / 80)); 
-    for (let i = 0; i < rawCoords.length; i += step) {
-      sampledCoords.push(rawCoords[i]);
+    if (rawCoords.length === 0) return;
+
+    // 補正前のズレ軌跡（赤点線）
+    const origLatLngs = rawCoords.map(c => [c[1], c[0]]);
+    const origLine = L.polyline(origLatLngs, {
+      color: '#e74c3c', weight: 2, dashArray: '5, 8', opacity: 0.6, fill: false
+    });
+    dataLayerGroup.addLayer(origLine);
+
+    // バリア（段差等）ピン表示
+    if (data.barriers && data.barriers.length > 0) {
+      data.barriers.forEach(b => {
+        if (b.coordinates) {
+          const marker = L.circleMarker(b.coordinates, {
+            radius: 7, fillColor: '#e74c3c', color: '#ffffff', weight: 2, fillOpacity: 0.9, fill: true
+          }).bindPopup(`<b>バリア情報</b><br>タイプ: ${b.type}<br>衝撃度: ${b.intensity}`);
+          dataLayerGroup.addLayer(marker);
+        }
+      });
     }
-    if (sampledCoords[sampledCoords.length - 1] !== rawCoords[rawCoords.length - 1]) {
-      sampledCoords.push(rawCoords[rawCoords.length - 1]);
+
+    // ダウンサンプリング処理
+    const maxPoints = 40;
+    const step = Math.max(1, Math.floor(rawCoords.length / maxPoints));
+    const sampledCoords = [];
+
+    for (let i = 0; i < rawCoords.length; i += step) {
+      sampledCoords.push([
+        Number(rawCoords[i][0].toFixed(5)),
+        Number(rawCoords[i][1].toFixed(5))
+      ]);
+    }
+    
+    const lastPoint = [
+      Number(rawCoords[rawCoords.length - 1][0].toFixed(5)),
+      Number(rawCoords[rawCoords.length - 1][1].toFixed(5))
+    ];
+    if (sampledCoords[sampledCoords.length - 1].join(',') !== lastPoint.join(',')) {
+      sampledCoords.push(lastPoint);
     }
 
     const coordString = sampledCoords.map(c => `${c[0]},${c[1]}`).join(';');
@@ -292,16 +366,11 @@
 
     try {
       const osrmRes = await fetch(osrmUrl);
-      if (!osrmRes.ok) throw new Error('OSRM APIからの応答エラー');
+      if (!osrmRes.ok) throw new Error(`OSRM APIエラー (HTTP ${osrmRes.status})`);
+
       const osrmData = await osrmRes.json();
 
       if (osrmData.code === 'Ok' && osrmData.matchings && osrmData.matchings.length > 0) {
-        const origLatLngs = rawCoords.map(c => [c[1], c[0]]);
-        const origLine = L.polyline(origLatLngs, {
-          color: '#e74c3c', weight: 2, dashArray: '5, 8', opacity: 0.6, fill: false
-        });
-        dataLayerGroup.addLayer(origLine);
-
         osrmData.matchings.forEach(match => {
           const matchedLatLngs = match.geometry.coordinates.map(c => [c[1], c[0]]);
           const matchedPolyline = L.polyline(matchedLatLngs, {
@@ -311,18 +380,19 @@
           map.fitBounds(matchedPolyline.getBounds(), { padding: [30, 30] });
         });
       } else {
-        alert('OSM道路ネットワーク上へのマッチングに失敗しました。');
+        alert('OSM道路ネットワーク上へのマッチング結果が得られませんでした。');
       }
+
     } catch (err) {
       console.error('マップマッチングエラー:', err);
-      alert('OSM道路補正処理中にエラーが発生しました。');
+      alert(`OSM道路補正に失敗しました。\n詳細: ${err.message}`);
     }
   }
 
-  // イベントリスナー
+  // イベント設定
   document.getElementById('btn-load').addEventListener('click', loadData);
 
-  // 初期化（メニューの動的生成を実行）
+  // 初期化
   fetchTripList();
 
   const legend = L.control({ position: 'bottomright' });
@@ -331,7 +401,8 @@
     div.innerHTML += '<b>表示凡例</b><br>';
     div.innerHTML += '<i style="background: #2980b9;"></i>補正なしルート (青)<br>';
     div.innerHTML += '<i style="background: #16a085;"></i>★ OSM補正ルート (緑)<br>';
-    div.innerHTML += '<i style="background: #e74c3c;"></i>元のズレ軌跡 (赤点線)<br>';
+    div.innerHTML += '<i style="background: #8e44ad;"></i>生データライン (紫)<br>';
+    div.innerHTML += '<i style="background: #e74c3c;"></i>バリア / 元GPS軌跡<br>';
     return div;
   };
   legend.addTo(map);
