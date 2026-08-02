@@ -291,7 +291,7 @@
     }
   }
 
-  // 3. 生データ（Raw Logs）の描画（塗りつぶし防止・純粋なライン表示）
+// 3. 生データ（Raw Logs）の描画（fill: false を強制して面塗りを防止）
   function renderRawData(data) {
     if (!data.raw_logs || data.raw_logs.length === 0) {
       alert('生データが見つかりませんでした。');
@@ -300,10 +300,13 @@
 
     const latLngs = [];
 
-    // 時系列順に座標を抽出
+    // 時系列順に有効な座標(FIXかつ緯度経度あり)のみを抽出
     data.raw_logs.forEach(log => {
-      if (log.gps_status === 'FIX' && log.lat && log.lon) {
-        latLngs.push([log.lat, log.lon]);
+      if (log.gps_status === 'FIX' && log.lat != null && log.lon != null) {
+        // 異常値（緯度経度が0など）を除外
+        if (log.lat > 20 && log.lat < 45 && log.lon > 120 && log.lon < 150) {
+          latLngs.push([log.lat, log.lon]);
+        }
       }
     });
 
@@ -312,28 +315,30 @@
       return;
     }
 
-    // ① 経路を1本の「線（Polyline）」だけで繋いで描画（塗りつぶしなし）
+    // ★ 面塗り（fill）を明示的に DISABLE（false）にする設定
     const rawPolyline = L.polyline(latLngs, {
-      color: '#8e44ad',  // 綺麗な紫色
-      weight: 3,         // 線の太さ
-      opacity: 0.85,     // 線の不透明度
-      smoothFactor: 1.0  // パフォーマンス最適化
+      color: '#8e44ad',    // 沿道の線色（紫色）
+      weight: 4,           // 線の太さ
+      opacity: 0.8,        // 線の不透明度
+      fill: false,         // ★★★ ここが重要：絶対に面を塗りつぶさない ★★★
+      fillOpacity: 0.0,    // ★★★ 塗りの透明度を0にする ★★★
+      smoothFactor: 1.0
     });
 
     dataLayerGroup.addLayer(rawPolyline);
 
-    // ② 衝撃が大きかったポイント（バリア候補）のみをピンポイントで点描画（面の原因になる全点描画を廃止）
+    // 衝撃検知（バリア候補）ポイントのみ赤い丸でハイライト
     data.raw_logs.forEach(log => {
-      if (log.gps_status === 'FIX' && log.lat && log.lon) {
+      if (log.gps_status === 'FIX' && log.lat != null && log.lon != null) {
         const azVal = Math.abs(log.az || 0);
-        // 1.2G以上の大きな衝撃があった箇所だけをプロット
         if (azVal >= 1.2) {
           const marker = L.circleMarker([log.lat, log.lon], {
             radius: 5,
-            fillColor: '#e74c3c', // 赤色
+            fillColor: '#e74c3c',
             color: '#ffffff',
             weight: 1,
-            fillOpacity: 0.9
+            fillOpacity: 0.9,
+            fill: true // 丸印（Marker）のみ塗りつぶす
           }).bindPopup(`
             <b>生データ衝撃検知 (ID: ${log.log_id})</b><br>
             時刻: ${log.jst}<br>
@@ -345,7 +350,7 @@
       }
     });
 
-    // 抽出した経路全体が収まるように地図枠をズーム調整
+    // 抽出した経路全体にズームイン
     map.fitBounds(rawPolyline.getBounds(), { padding: [30, 30] });
   }
   
