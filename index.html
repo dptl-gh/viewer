@@ -55,7 +55,6 @@
       flex: 1;
       width: 100%;
     }
-    /* 凡例 */
     .legend {
       background: white;
       padding: 10px 14px;
@@ -79,12 +78,13 @@
 
 <div id="container">
   <div id="control-panel">
-    <!-- データタイプの切り替え -->
+    <!-- データタイプの切り替え（OSMマップマッチングモードを追加） -->
     <div class="control-group">
       <label for="datatype-select"><strong>データ種別:</strong></label>
       <select id="datatype-select">
         <option value="cleansed">クレンジングデータ (表示軽量化)</option>
         <option value="raw">生データ (Raw Sensor Logs)</option>
+        <option value="osm_matched">★ OSM道路補正 (マップマッチング)</option>
       </select>
     </div>
 
@@ -94,7 +94,6 @@
       <select id="mode-select">
         <option value="course_3">街歩きコース (Trip ID: 3)</option>
         <option value="course_4">街歩きコース (Trip ID: 4)</option>
-        <option value="route_spatial">経路指定検索 (スタート→ゴール)</option>
       </select>
     </div>
 
@@ -109,265 +108,210 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
-  // -------------------------------------------------------------------------
-  // GitHub Actions のデプロイ時に Secrets から値が置換されるプレースホルダー
-  // -------------------------------------------------------------------------
   const SUPABASE_URL = '__SUPABASE_URL__';
   const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
-
   const BASE_URL = `${SUPABASE_URL}/functions/v1/get-viewer-data`;
 
-  // 地図の初期化（福岡市周辺を中心）
   const map = L.map('map').setView([33.5895, 130.3990], 16);
 
-  // 1. 地図タイルの設定（OpenStreetMap ＆ 地理院タイル）
   const osmTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
-    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    attribution: '© OpenStreetMap contributors'
   });
 
   const gsiStandardTile = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
     maxZoom: 18,
-    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+    attribution: '国土地理院'
   });
 
-  const gsiPhotoTile = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
-    maxZoom: 18,
-    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
-  });
-
-  // デフォルトで OpenStreetMap を表示
   osmTile.addTo(map);
 
-  // タイル切り替えコントロールの追加（右上に配置）
   const baseMaps = {
     "OpenStreetMap (デフォルト)": osmTile,
-    "国土地理院 (標準地図)": gsiStandardTile,
-    "国土地理院 (全国最新写真)": gsiPhotoTile
+    "国土地理院 (標準地図)": gsiStandardTile
   };
   L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
 
-  // 描画用レイヤーグループ
   const dataLayerGroup = L.layerGroup().addTo(map);
 
-  // 2. データの取得と描画関数
   async function loadData() {
     const dataType = document.getElementById('datatype-select').value;
     const mode = document.getElementById('mode-select').value;
     const statusMsg = document.getElementById('status-msg');
-    
-    // 安全チェック
+
     if (SUPABASE_URL.startsWith('__')) {
-      alert('SupabaseのURLが設定されていません。GitHub Secretsの設定を確認してください。');
+      alert('SupabaseのURLが設定されていません。');
       return;
     }
 
-    // 画面の初期化
     dataLayerGroup.clearLayers();
     statusMsg.innerText = 'データを取得中...';
 
-    let requestUrl = '';
-
-    // A. 生データ（Raw）モードの場合
-    if (dataType === 'raw') {
-      if (mode === 'course_3') {
-        // 2時間分をカバーする 80,000 件を指定
-        requestUrl = `${BASE_URL}?mode=raw&trip_id=3&limit=80000`;
-      } else if (mode === 'course_4') {
-        requestUrl = `${BASE_URL}?mode=raw&trip_id=4&limit=80000`;
-      } else if (mode === 'route_spatial') {
-        alert('生データモードでの経路指定検索は未対応です。街歩きコースを選択してください。');
-        statusMsg.innerText = '';
-        return;
-      }
-    }    // B. クレンジング（Cleansed）モードの場合
-    else {
-      if (mode === 'course_3') {
-        requestUrl = `${BASE_URL}?mode=course&trip_id=3`;
-      } else if (mode === 'course_4') {
-        requestUrl = `${BASE_URL}?mode=course&trip_id=4`;
-      } else if (mode === 'route_spatial') {
-        requestUrl = `${BASE_URL}?mode=route&start_lat=33.5893&start_lon=130.3979&end_lat=33.5897&end_lon=130.4001`;
-      }
-    }
+    const tripId = mode === 'course_3' ? 3 : 4;
 
     try {
-      const response = await fetch(requestUrl, {
-        headers: {
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'apikey': SUPABASE_ANON_KEY
-        }
-      });
-
-      if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-      const json = await response.json();
-
-      statusMsg.innerText = '';
-
-      // レンダリング切り替え
-      if (dataType === 'raw') {
+      // 1. クレンジングデータ表示
+      if (dataType === 'cleansed') {
+        const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
+          headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
+        });
+        const json = await response.json();
+        statusMsg.innerText = '';
+        renderCourseData(json);
+      } 
+      // 2. 生データ表示
+      else if (dataType === 'raw') {
+        const response = await fetch(`${BASE_URL}?mode=raw&trip_id=${tripId}&limit=80000`, {
+          headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
+        });
+        const json = await response.json();
+        statusMsg.innerText = '';
         renderRawData(json);
-      } else {
-        if (json.route || json.barriers) {
-          renderCourseData(json);
-        } else if (json.data) {
-          renderRouteSpatialData(json.data);
-        } else {
-          alert('該当するデータが存在しませんでした。');
-        }
+      }
+      // 3. OSMマップマッチング（道路補正）モード
+      else if (dataType === 'osm_matched') {
+        statusMsg.innerText = 'クレンジングデータ取得中...';
+        const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
+          headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
+        });
+        const json = await response.json();
+        
+        statusMsg.innerText = 'OSM歩道データにマッチング計算中...';
+        await renderOSMMatchedData(json);
+        statusMsg.innerText = '';
       }
 
     } catch (err) {
       console.error(err);
       statusMsg.innerText = 'エラーが発生しました。';
-      alert(`データの取得に失敗しました: ${err.message}`);
+      alert(`エラー: ${err.message}`);
     }
   }
 
-  // 1. クレンジングデータ（コース）の描画
+  // クレンジング描画
   function renderCourseData(data) {
     const latLngs = [];
-
-    if (data.route && data.route.length > 0) {
+    if (data.route) {
       data.route.forEach(pt => {
-        if (pt.coordinates && pt.coordinates.length === 2) {
-          latLngs.push(pt.coordinates);
-        }
+        if (pt.coordinates && pt.coordinates.length === 2) latLngs.push(pt.coordinates);
       });
-
       if (latLngs.length > 0) {
-        const polyline = L.polyline(latLngs, { color: '#2980b9', weight: 5, opacity: 0.8 });
+        const polyline = L.polyline(latLngs, { color: '#2980b9', weight: 5, opacity: 0.8, fill: false });
         dataLayerGroup.addLayer(polyline);
         map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
       }
     }
-
-    if (data.barriers && data.barriers.length > 0) {
-      data.barriers.forEach(b => {
-        if (b.coordinates) {
-          const marker = L.circleMarker(b.coordinates, {
-            radius: 7,
-            fillColor: '#e74c3c',
-            color: '#ffffff',
-            weight: 2,
-            fillOpacity: 0.9
-          }).bindPopup(`<b>バリア情報 (クレンジング)</b><br>タイプ: ${b.type}<br>衝撃度: ${b.intensity}`);
-          
-          dataLayerGroup.addLayer(marker);
-        }
-      });
-    }
   }
 
-  // 2. 空間経路検索結果の描画
-  function renderRouteSpatialData(items) {
+  // 生データ描画
+  function renderRawData(data) {
+    if (!data.raw_logs) return;
     const latLngs = [];
-
-    items.forEach(pt => {
-      if (pt.lat && pt.lon) {
-        const pos = [pt.lat, pt.lon];
-        latLngs.push(pos);
-
-        if (pt.near_barriers && pt.near_barriers.length > 0) {
-          pt.near_barriers.forEach(b => {
-            const marker = L.circleMarker([b.lat, b.lon], {
-              radius: 6,
-              fillColor: '#e67e22',
-              color: '#ffffff',
-              weight: 1,
-              fillOpacity: 0.9
-            }).bindPopup(`<b>周辺バリア</b><br>タイプ: ${b.type}<br>強度: ${b.intensity}`);
-            
-            dataLayerGroup.addLayer(marker);
-          });
-        }
+    data.raw_logs.forEach(log => {
+      if (log.gps_status === 'FIX' && log.lat > 20 && log.lon > 120) {
+        latLngs.push([log.lat, log.lon]);
       }
     });
 
     if (latLngs.length > 0) {
-      const polyline = L.polyline(latLngs, { color: '#27ae60', weight: 6, opacity: 0.8 });
-      dataLayerGroup.addLayer(polyline);
-      map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+      const rawPolyline = L.polyline(latLngs, {
+        color: '#8e44ad',
+        weight: 3,
+        opacity: 0.8,
+        fill: false,
+        fillOpacity: 0.0
+      });
+      dataLayerGroup.addLayer(rawPolyline);
+      map.fitBounds(rawPolyline.getBounds(), { padding: [30, 30] });
     }
   }
 
-// 3. 生データ（Raw Logs）の描画（fill: false を強制して面塗りを防止）
-  function renderRawData(data) {
-    if (!data.raw_logs || data.raw_logs.length === 0) {
-      alert('生データが見つかりませんでした。');
+  // ★ 4. マップマッチング (OSRM API呼び出し処理)
+  async function renderOSMMatchedData(data) {
+    if (!data.route || data.route.length === 0) {
+      alert('補正対象のルートデータがありません。');
       return;
     }
 
-    const latLngs = [];
-
-    // 時系列順に有効な座標(FIXかつ緯度経度あり)のみを抽出
-    data.raw_logs.forEach(log => {
-      if (log.gps_status === 'FIX' && log.lat != null && log.lon != null) {
-        // 異常値（緯度経度が0など）を除外
-        if (log.lat > 20 && log.lat < 45 && log.lon > 120 && log.lon < 150) {
-          latLngs.push([log.lat, log.lon]);
-        }
+    // クレンジング点から座標配列を整理 [lon, lat] 形式 (OSRM仕様)
+    const rawCoords = [];
+    data.route.forEach(pt => {
+      if (pt.coordinates && pt.coordinates.length === 2) {
+        // [lat, lon] -> [lon, lat] に変換
+        rawCoords.push([pt.coordinates[1], pt.coordinates[0]]);
       }
     });
 
-    if (latLngs.length === 0) {
-      alert('有効な位置情報(GPS FIX)が含まれる生データがありませんでした。');
-      return;
+    // OSRM Match API は1回につき100点程度までを推奨するため、サンプリング間隔を調整
+    const sampledCoords = [];
+    const step = Math.max(1, Math.floor(rawCoords.length / 80)); 
+    for (let i = 0; i < rawCoords.length; i += step) {
+      sampledCoords.push(rawCoords[i]);
+    }
+    // 終点を確実に追加
+    if (sampledCoords[sampledCoords.length - 1] !== rawCoords[rawCoords.length - 1]) {
+      sampledCoords.push(rawCoords[rawCoords.length - 1]);
     }
 
-    // ★ 面塗り（fill）を明示的に DISABLE（false）にする設定
-    const rawPolyline = L.polyline(latLngs, {
-      color: '#8e44ad',    // 沿道の線色（紫色）
-      weight: 4,           // 線の太さ
-      opacity: 0.8,        // 線の不透明度
-      fill: false,         // ★★★ ここが重要：絶対に面を塗りつぶさない ★★★
-      fillOpacity: 0.0,    // ★★★ 塗りの透明度を0にする ★★★
-      smoothFactor: 1.0
-    });
+    // 座標文字列をセミコロン区切りで結合 "lon,lat;lon,lat;..."
+    const coordString = sampledCoords.map(c => `${c[0]},${c[1]}`).join(';');
+    
+    // OSRM 歩行者(foot) マップマッチング URL
+    const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordString}?overview=full&geometries=geojson`;
 
-    dataLayerGroup.addLayer(rawPolyline);
+    try {
+      const osrmRes = await fetch(osrmUrl);
+      if (!osrmRes.ok) throw new Error('OSRM APIからの応答エラー');
+      const osrmData = await osrmRes.json();
 
-    // 衝撃検知（バリア候補）ポイントのみ赤い丸でハイライト
-    data.raw_logs.forEach(log => {
-      if (log.gps_status === 'FIX' && log.lat != null && log.lon != null) {
-        const azVal = Math.abs(log.az || 0);
-        if (azVal >= 1.2) {
-          const marker = L.circleMarker([log.lat, log.lon], {
-            radius: 5,
-            fillColor: '#e74c3c',
-            color: '#ffffff',
-            weight: 1,
-            fillOpacity: 0.9,
-            fill: true // 丸印（Marker）のみ塗りつぶす
-          }).bindPopup(`
-            <b>生データ衝撃検知 (ID: ${log.log_id})</b><br>
-            時刻: ${log.jst}<br>
-            垂直加速度 (az): ${log.az} G<br>
-            加速度 (ax, ay): ${log.ax}, ${log.ay}
-          `);
-          dataLayerGroup.addLayer(marker);
-        }
+      if (osrmData.code === 'Ok' && osrmData.matchings && osrmData.matchings.length > 0) {
+        // 1. 元のズレている軌跡（薄い点線で比較用に表示）
+        const origLatLngs = rawCoords.map(c => [c[1], c[0]]);
+        const origLine = L.polyline(origLatLngs, {
+          color: '#e74c3c',
+          weight: 2,
+          dashArray: '5, 8',
+          opacity: 0.6,
+          fill: false
+        });
+        dataLayerGroup.addLayer(origLine);
+
+        // 2. OSMの歩道上にスナップ（補正）された美しい軌跡
+        osrmData.matchings.forEach(match => {
+          // GeoJSON [lon, lat] を Leaflet [lat, lon] に変換
+          const matchedLatLngs = match.geometry.coordinates.map(c => [c[1], c[0]]);
+          
+          const matchedPolyline = L.polyline(matchedLatLngs, {
+            color: '#16a085', // エメラルドグリーン
+            weight: 6,
+            opacity: 0.9,
+            fill: false
+          });
+          
+          dataLayerGroup.addLayer(matchedPolyline);
+          map.fitBounds(matchedPolyline.getBounds(), { padding: [30, 30] });
+        });
+
+      } else {
+        alert('OSM道路ネットワーク上へのマッチングに失敗しました。');
       }
-    });
 
-    // 抽出した経路全体にズームイン
-    map.fitBounds(rawPolyline.getBounds(), { padding: [30, 30] });
+    } catch (err) {
+      console.error('マップマッチングエラー:', err);
+      alert('OSM道路補正処理中にエラーが発生しました。');
+    }
   }
-  
-  // イベント設定
+
   document.getElementById('btn-load').addEventListener('click', loadData);
-
-  // 初回読み込み
   loadData();
 
-  // 凡例コントロールの追加（右下）
   const legend = L.control({ position: 'bottomright' });
   legend.onAdd = function () {
     const div = L.DomUtil.create('div', 'legend');
     div.innerHTML += '<b>表示凡例</b><br>';
-    div.innerHTML += '<i style="background: #2980b9;"></i>走行ルート (クレンジング)<br>';
-    div.innerHTML += '<i style="background: #8e44ad;"></i>生データライン (Raw)<br>';
-    div.innerHTML += '<i style="background: #e74c3c;"></i>バリア / 衝撃検知<br>';
+    div.innerHTML += '<i style="background: #2980b9;"></i>走行ルート (通常)<br>';
+    div.innerHTML += '<i style="background: #16a085;"></i>★ OSM補正ルート (歩道吸着)<br>';
+    div.innerHTML += '<i style="background: #e74c3c;"></i>元GPS軌跡 (点線)<br>';
     return div;
   };
   legend.addTo(map);
