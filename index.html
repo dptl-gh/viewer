@@ -217,7 +217,6 @@
     }
   }
 
-  // 環境センサー（熱中症ロガー）データの取得と描画
   async function loadSensorLoggers() {
     loggerLayerGroup.clearLayers();
     if (SUPABASE_URL.startsWith('__') || SUPABASE_ANON_KEY.startsWith('__')) return;
@@ -326,7 +325,6 @@
     renderBarriers(data.barriers);
   }
 
-  // Turf.jsによる転換点抽出とOSRM Map Matching APIでの補正 (重複座標フィルタリング追加)
   async function renderOSRMMatchedData(data) {
     const statusMsg = document.getElementById('status-msg');
 
@@ -354,7 +352,6 @@
     try {
       statusMsg.innerText = 'OSRMで経路を補正中...';
 
-      // 1. 同一座標および3メートル未満の微細なGPSブレを除外するフィルタリング
       const cleanCoords = [turfCoords[0]];
       for (let i = 1; i < turfCoords.length; i++) {
         const p1 = turf.point(cleanCoords[cleanCoords.length - 1]);
@@ -370,7 +367,6 @@
         throw new Error('ノイズ除去後、補正に必要な移動ポイントが不足しています。');
       }
 
-      // 2. 進行方向による転換点の抽出
       const keyPoints = [cleanCoords[0]];
       let lastBearing = turf.bearing(turf.point(cleanCoords[0]), turf.point(cleanCoords[1]));
 
@@ -389,7 +385,6 @@
       }
       keyPoints.push(cleanCoords[cleanCoords.length - 1]);
 
-      // 3. OSRM APIのポイント数上限対策
       const MAX_OSRM_POINTS = 90;
       let targetPoints = keyPoints;
       if (keyPoints.length > MAX_OSRM_POINTS) {
@@ -401,7 +396,10 @@
       }
 
       const coordsString = targetPoints.map(c => c.join(',')).join(';');
-      const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordsString}?overview=full&geometries=geojson&radiuses=${targetPoints.map(() => 20).join(';')}`;
+      
+      // 対策1: radiusesの値を 20 から 50 に拡大し、マッチングの許容範囲を広げる
+      const radiusesParam = targetPoints.map(() => 50).join(';');
+      const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordsString}?overview=full&geometries=geojson&radiuses=${radiusesParam}`;
 
       const osrmResponse = await fetch(osrmUrl);
       const osrmData = await osrmResponse.json();
@@ -417,19 +415,20 @@
         map.fitBounds(matchedPolyline.getBounds(), { padding: [30, 30] });
         statusMsg.innerText = '';
       } else {
-        throw new Error('OSRMによるマッチング結果が得られませんでした。');
+        // 対策2: APIからの具体的なエラーコードとメッセージを出力させる
+        throw new Error(`APIレスポンス: ${osrmData.code} - ${osrmData.message || '詳細なエラー情報なし'}`);
       }
 
     } catch (e) {
-      console.error('OSRM matching error:', e);
-      statusMsg.innerText = '経路マッチングに失敗したため、通常描画を行います。';
+      console.warn('OSRM matching failed:', e);
+      // ユーザーへの通知は維持しつつ、後続の通常描画（フォールバック）を確実に実行させる
+      statusMsg.innerText = `マッチング失敗 (通常描画を表示): ${e.message}`;
       renderCourseData(data);
     }
 
     renderBarriers(data.barriers);
   }
 
-  // バリアマーカー描画（ホバー時にツールチップ表示）
   function renderBarriers(barriers) {
     if (barriers && barriers.length > 0) {
       barriers.forEach(b => {
@@ -445,7 +444,6 @@
     }
   }
 
-  // スタート・ゴール地点マーカー描画
   function renderStartEndMarkers(data) {
     if (!data.route || data.route.length === 0) return;
 
