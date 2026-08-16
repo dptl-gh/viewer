@@ -133,11 +133,15 @@
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 
 <script>
+  // ==========================================
+  // 定数設定（ご自身のプロジェクト設定に書き換えてください）
+  // ==========================================
   const SUPABASE_URL = '__SUPABASE_URL__';
-  const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__'; // ※必ず正しいanonキーに置き換えてください
+  const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__'; 
   const BASE_URL = `${SUPABASE_URL}/functions/v1/get-viewer-data`;
   const REST_URL = `${SUPABASE_URL}/rest/v1`;
 
+  // マップ初期化
   const map = L.map('map').setView([33.5895, 130.3990], 16);
 
   const osmTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -171,6 +175,7 @@
   dataTypeSelect.addEventListener('change', updateUIState);
   updateUIState();
 
+  // コース一覧の取得
   async function fetchTripList() {
     const selectElem = document.getElementById('mode-select');
     if (SUPABASE_URL.startsWith('__')) {
@@ -201,18 +206,22 @@
     }
   }
 
-  // 環境センサー（熱中症ロガー）データの取得と描画 (常に表示する)
+  // 環境センサー（熱中症ロガー）データの取得と描画 (常に表示)
   async function loadSensorLoggers() {
     loggerLayerGroup.clearLayers();
     if (SUPABASE_URL.startsWith('__') || SUPABASE_ANON_KEY.startsWith('__')) return;
 
     try {
+      // ※ここにヘッダーが確実に付与されています
       const response = await fetch(`${REST_URL}/device_current_status?select=*`, {
-        headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
+        headers: { 
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 
+          'apikey': SUPABASE_ANON_KEY 
+        }
       });
       
       if (!response.ok) {
-        if (response.status === 401) throw new Error('認証エラー (401): RLS設定またはAPIキーを確認してください。');
+        if (response.status === 401) throw new Error('認証エラー (401): APIキーの文字列、またはRLS/GRANT設定を確認してください。');
         throw new Error(`センサーデータの取得に失敗 (${response.status})`);
       }
       
@@ -261,6 +270,7 @@
     }
   }
 
+  // ルート・バリアデータの読み込み
   async function loadData() {
     const dataType = dataTypeSelect.value;
     const isOsmMatchEnabled = chkOsmMatch.checked;
@@ -275,7 +285,7 @@
     dataLayerGroup.clearLayers();
     statusMsg.innerText = 'データを取得中...';
 
-    // データの再読み込みと同時にロガーも更新し、常に表示させる
+    // データの再読み込みと同時にロガーも更新（常に表示）
     loadSensorLoggers();
 
     try {
@@ -286,7 +296,7 @@
         const json = await response.json();
         statusMsg.innerText = '';
         renderRawData(json);
-        renderStartEndMarkers(json); // 生データでもS/Gマーカーを描画
+        renderStartEndMarkers(json);
       } 
       else if (dataType === 'cleansed') {
         const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
@@ -301,7 +311,7 @@
           renderCourseData(json);
         }
         
-        renderStartEndMarkers(json); // クレンジングデータでもS/Gマーカーを描画
+        renderStartEndMarkers(json);
       }
     } catch (err) {
       console.error(err);
@@ -325,6 +335,7 @@
     renderBarriers(data.barriers);
   }
 
+  // OSRM Map Matching
   async function renderOSRMMatchedData(data) {
     const statusMsg = document.getElementById('status-msg');
 
@@ -352,6 +363,7 @@
     try {
       statusMsg.innerText = 'OSRMで経路を補正中...';
 
+      // 3m距離フィルタ
       const cleanCoords = [turfCoords[0]];
       for (let i = 1; i < turfCoords.length; i++) {
         const p1 = turf.point(cleanCoords[cleanCoords.length - 1]);
@@ -367,6 +379,7 @@
         throw new Error('ノイズ除去後、補正に必要な移動ポイントが不足しています。');
       }
 
+      // 転換点抽出
       const keyPoints = [cleanCoords[0]];
       let lastBearing = turf.bearing(turf.point(cleanCoords[0]), turf.point(cleanCoords[1]));
 
@@ -396,7 +409,7 @@
       }
 
       const coordsString = targetPoints.map(c => c.join(',')).join(';');
-      const radiusesParam = targetPoints.map(() => 50).join(';');
+      const radiusesParam = targetPoints.map(() => 50).join(';'); // 50mに拡大
       const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordsString}?overview=full&geometries=geojson&radiuses=${radiusesParam}`;
 
       const osrmResponse = await fetch(osrmUrl);
@@ -440,7 +453,6 @@
     }
   }
 
-  // 生データとクレンジングデータの両方に対応したスタート・ゴール地点描画
   function renderStartEndMarkers(data) {
     let startPt = null;
     let endPt = null;
@@ -449,7 +461,6 @@
       startPt = data.route[0].coordinates;
       endPt = data.route[data.route.length - 1].coordinates;
     } else if (data.raw_logs && data.raw_logs.length > 0) {
-      // 生データの場合は有効なGPSステータスの配列から両端を取得する
       const validLogs = data.raw_logs.filter(log => log.gps_status === 'FIX' && log.lat > 20 && log.lon > 120);
       if (validLogs.length > 0) {
         startPt = [validLogs[0].lat, validLogs[0].lon];
@@ -492,12 +503,14 @@
     }
   }
 
+  // イベントリスナー登録
   document.getElementById('btn-load').addEventListener('click', loadData);
-  fetchTripList();
   
-  // 初回起動時にもロガーを表示
+  // 初期ロード
+  fetchTripList();
   loadSensorLoggers();
 
+  // 凡例の設定
   const legend = L.control({ position: 'bottomright' });
   legend.onAdd = function () {
     const div = L.DomUtil.create('div', 'legend');
