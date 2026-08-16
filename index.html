@@ -217,6 +217,7 @@
     }
   }
 
+  // 環境センサー（熱中症ロガー）データの取得と描画
   async function loadSensorLoggers() {
     loggerLayerGroup.clearLayers();
     if (SUPABASE_URL.startsWith('__') || SUPABASE_ANON_KEY.startsWith('__')) return;
@@ -232,18 +233,29 @@
       }
       
       const devices = await response.json();
+      const now = new Date().getTime();
+      const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
       devices.forEach(device => {
-        let markerColor = '#00bcd4';
-        if (device.temperature > 35) {
-          markerColor = '#e74c3c';
-        } else if (device.temperature > 30) {
-          markerColor = '#f39c12';
+        const logTime = new Date(device.jst).getTime();
+        const isOutdated = (now - logTime) > TWO_HOURS_MS;
+
+        let markerColor = '#00bcd4'; // デフォルト: 水色
+        let borderColor = '#fff';
+
+        // 優先順位に従って判定
+        if (isOutdated) {
+          markerColor = '#ffffff'; // 白抜き背景
+          borderColor = '#7f8c8d'; // グレー枠線で白抜きを表現
+        } else if (device.temperature >= 35) {
+          markerColor = '#e74c3c'; // 赤
+        } else if (device.temperature >= 30) {
+          markerColor = '#f39c12'; // オレンジ
         }
 
         const loggerIcon = L.divIcon({
           className: 'custom-logger-icon',
-          html: `<div style="width: 14px; height: 14px; background-color: ${markerColor}; border: 2px solid #fff; transform: rotate(45deg); box-shadow: 1px 1px 3px rgba(0,0,0,0.5);"></div>`,
+          html: `<div style="width: 14px; height: 14px; background-color: ${markerColor}; border: 2px solid ${borderColor}; box-sizing: border-box; transform: rotate(45deg); box-shadow: 1px 1px 3px rgba(0,0,0,0.5);"></div>`,
           iconSize: [18, 18],
           iconAnchor: [9, 9]
         });
@@ -251,8 +263,11 @@
         const marker = L.marker([device.lat, device.lon], { icon: loggerIcon, zIndexOffset: 1000 });
         const jstString = new Date(device.jst).toLocaleString('ja-JP');
         
+        let statusText = isOutdated ? '<span style="color: #7f8c8d; font-size: 11px;">(データが古いです)</span>' : '';
+        let tooltipColor = isOutdated ? '#7f8c8d' : markerColor;
+
         marker.bindTooltip(
-          `<b>${device.device_name || device.device_id}</b><br>時刻: ${jstString}<br>気温: <span style="color:${markerColor};">${device.temperature}℃</span>`,
+          `<b>${device.device_name || device.device_id}</b><br>時刻: ${jstString} ${statusText}<br>気温: <span style="color:${tooltipColor};">${device.temperature}℃</span>`,
           { className: 'sensor-tooltip', direction: 'top' }
         );
 
@@ -396,8 +411,6 @@
       }
 
       const coordsString = targetPoints.map(c => c.join(',')).join(';');
-      
-      // 対策1: radiusesの値を 20 から 50 に拡大し、マッチングの許容範囲を広げる
       const radiusesParam = targetPoints.map(() => 50).join(';');
       const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordsString}?overview=full&geometries=geojson&radiuses=${radiusesParam}`;
 
@@ -415,13 +428,11 @@
         map.fitBounds(matchedPolyline.getBounds(), { padding: [30, 30] });
         statusMsg.innerText = '';
       } else {
-        // 対策2: APIからの具体的なエラーコードとメッセージを出力させる
         throw new Error(`APIレスポンス: ${osrmData.code} - ${osrmData.message || '詳細なエラー情報なし'}`);
       }
 
     } catch (e) {
       console.warn('OSRM matching failed:', e);
-      // ユーザーへの通知は維持しつつ、後続の通常描画（フォールバック）を確実に実行させる
       statusMsg.innerText = `マッチング失敗 (通常描画を表示): ${e.message}`;
       renderCourseData(data);
     }
@@ -500,9 +511,10 @@
     div.innerHTML += '<i style="background: #e74c3c; border: 1px solid #ccc;"></i>G ゴール地点<br>';
     div.innerHTML += '<hr style="margin: 5px 0; border: 0; border-top: 1px solid #ccc;">';
     div.innerHTML += '<b>センサー</b><br>';
-    div.innerHTML += '<i style="background: #e74c3c; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>35度超 (赤)<br>';
-    div.innerHTML += '<i style="background: #f39c12; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>30度超 (オレンジ)<br>';
+    div.innerHTML += '<i style="background: #e74c3c; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>35度以上 (赤)<br>';
+    div.innerHTML += '<i style="background: #f39c12; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>30度以上 (オレンジ)<br>';
     div.innerHTML += '<i style="background: #00bcd4; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>安全域 (水色)<br>';
+    div.innerHTML += '<i style="background: #ffffff; border: 2px solid #7f8c8d; box-sizing: border-box; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>2H以上未更新 (白抜)<br>';
     return div;
   };
   legend.addTo(map);
