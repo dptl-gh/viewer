@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>車椅子ルート・バリアマップビューワー</title>
+  <title>車椅子ルート・バリアマップ＆環境ビューワー</title>
   
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -87,6 +87,11 @@
       opacity: 0.8;
       border-radius: 50%;
     }
+    .leaflet-tooltip.sensor-tooltip {
+      font-size: 14px;
+      font-weight: bold;
+      border: 2px solid #333;
+    }
   </style>
 </head>
 <body>
@@ -104,7 +109,14 @@
     <div class="control-group">
       <label id="osm-match-wrapper" class="checkbox-label">
         <input type="checkbox" id="chk-osm-match">
-        <span>★ 軌跡滑らか化・ブレ補正 (Turf.js)</span>
+        <span>★ 経路マッチング (Turf+OSRM)</span>
+      </label>
+    </div>
+
+    <div class="control-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="chk-show-loggers" checked>
+        <span>🌡 熱中症ロガー表示</span>
       </label>
     </div>
 
@@ -122,7 +134,6 @@
   <div id="map"></div>
 </div>
 
-<!-- Leaflet JS & Turf.js (幾何解析・スプライン曲線ライブラリ) -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
 
@@ -130,6 +141,7 @@
   const SUPABASE_URL = '__SUPABASE_URL__';
   const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
   const BASE_URL = `${SUPABASE_URL}/functions/v1/get-viewer-data`;
+  const REST_URL = `${SUPABASE_URL}/rest/v1`;
 
   const map = L.map('map').setView([33.5895, 130.3990], 16);
 
@@ -144,10 +156,12 @@
   L.control.layers({ "OpenStreetMap": osmTile, "国土地理院": gsiStandardTile }, null, { position: 'topright' }).addTo(map);
 
   const dataLayerGroup = L.layerGroup().addTo(map);
+  const loggerLayerGroup = L.layerGroup().addTo(map); // ロガー専用レイヤー
 
   const dataTypeSelect = document.getElementById('datatype-select');
   const chkOsmMatch = document.getElementById('chk-osm-match');
   const osmMatchWrapper = document.getElementById('osm-match-wrapper');
+  const chkShowLoggers = document.getElementById('chk-show-loggers');
 
   function updateUIState() {
     if (dataTypeSelect.value === 'cleansed') {
@@ -163,24 +177,27 @@
   dataTypeSelect.addEventListener('change', updateUIState);
   updateUIState();
 
+  chkShowLoggers.addEventListener('change', () => {
+    if (chkShowLoggers.checked) {
+      loadSensorLoggers();
+    } else {
+      loggerLayerGroup.clearLayers();
+    }
+  });
+
   async function fetchTripList() {
     const selectElem = document.getElementById('mode-select');
-
     if (SUPABASE_URL.startsWith('__')) {
       selectElem.innerHTML = '<option value="">(Secrets未設定)</option>';
       return;
     }
-
     try {
       const response = await fetch(`${BASE_URL}?mode=trips`, {
         headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
       });
-      
       if (!response.ok) throw new Error('コース一覧の取得に失敗しました');
       const json = await response.json();
-
       selectElem.innerHTML = '';
-
       if (json.trips && json.trips.length > 0) {
         json.trips.forEach(t => {
           const opt = document.createElement('option');
@@ -188,21 +205,69 @@
           opt.textContent = `街歩きコース (Trip ID: ${t.trip_id})`;
           selectElem.appendChild(opt);
         });
-
         loadData();
       } else {
         selectElem.innerHTML = '<option value="">コースが見つかりません</option>';
       }
-
     } catch (err) {
       console.error(err);
       selectElem.innerHTML = '<option value="">一覧取得エラー</option>';
     }
   }
 
+  // ① 環境センサー（熱中症ロガー）データの取得と描画
+  async function loadSensorLoggers() {
+    loggerLayerGroup.clearLayers();
+    if (SUPABASE_URL.startsWith('__')) return;
+
+    try {
+      const response = await fetch(`${REST_URL}/device_current_status?select=*`, {
+        headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
+      });
+      if (!response.ok) throw new Error('センサーデータの取得に失敗');
+      const devices = await response.json();
+      
+      const now = new Date().getTime();
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+
+      devices.forEach(device => {
+        const logTime = new Date(device.jst).getTime();
+        
+        // 最終更新から1時間以上経過している場合はスキップ
+        if ((now - logTime) > ONE_HOUR_MS) return;
+
+        let markerColor = '#00bcd4'; // 水色 (デフォルト)
+        if (device.temperature > 35) {
+          markerColor = '#e74c3c'; // 赤
+        } else if (device.temperature > 30) {
+          markerColor = '#f39c12'; // オレンジ
+        }
+
+        const marker = L.circleMarker([device.lat, device.lon], {
+          radius: 10,
+          fillColor: markerColor,
+          color: '#ffffff',
+          weight: 2,
+          fillOpacity: 0.9,
+          zIndexOffset: 1000
+        });
+
+        const jstString = new Date(device.jst).toLocaleString('ja-JP');
+        marker.bindTooltip(
+          `<b>${device.device_name || device.device_id}</b><br>時刻: ${jstString}<br>気温: <span style="color:${markerColor};">${device.temperature}℃</span>`,
+          { className: 'sensor-tooltip', direction: 'top' }
+        );
+
+        loggerLayerGroup.addLayer(marker);
+      });
+    } catch (err) {
+      console.error('環境センサー取得エラー:', err);
+    }
+  }
+
   async function loadData() {
     const dataType = dataTypeSelect.value;
-    const isSmoothEnabled = chkOsmMatch.checked;
+    const isOsmMatchEnabled = chkOsmMatch.checked;
     const tripId = document.getElementById('mode-select').value;
     const statusMsg = document.getElementById('status-msg');
 
@@ -213,6 +278,9 @@
 
     dataLayerGroup.clearLayers();
     statusMsg.innerText = 'データを取得中...';
+
+    // データの再読み込みと同時にロガーも更新する
+    if (chkShowLoggers.checked) loadSensorLoggers();
 
     try {
       if (dataType === 'raw') {
@@ -230,13 +298,12 @@
         const json = await response.json();
         statusMsg.innerText = '';
 
-        if (isSmoothEnabled) {
-          renderSmoothedData(json);
+        if (isOsmMatchEnabled) {
+          await renderOSRMMatchedData(json);
         } else {
           renderCourseData(json);
         }
       }
-
     } catch (err) {
       console.error(err);
       statusMsg.innerText = 'エラーが発生しました。';
@@ -244,7 +311,6 @@
     }
   }
 
-  // 通常描画
   function renderCourseData(data) {
     const latLngs = [];
     if (data.route) {
@@ -257,26 +323,26 @@
         map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
       }
     }
-
     renderBarriers(data.barriers);
   }
 
-  // 🌟 Turf.js を使用したローカル高精度スプライン曲線補正（通信なし・100%成功）
-  function renderSmoothedData(data) {
+  // ② Turf.jsによる転換点抽出とOSRM Map Matching APIでの補正
+  async function renderOSRMMatchedData(data) {
+    const statusMsg = document.getElementById('status-msg');
+
     if (!data.route || data.route.length < 3) {
       alert('補正に必要なポイント数が足りません。');
+      renderCourseData(data);
       return;
     }
 
-    // 1. 元データ (赤点線で裏に表示)
     const rawLatLngs = [];
     const turfCoords = [];
 
     data.route.forEach(pt => {
       if (pt.coordinates && pt.coordinates.length === 2) {
         rawLatLngs.push(pt.coordinates);
-        // Turf.js は [lon, lat] 順
-        turfCoords.push([pt.coordinates[1], pt.coordinates[0]]);
+        turfCoords.push([pt.coordinates[1], pt.coordinates[0]]); // Turf.js は [lon, lat]
       }
     });
 
@@ -286,31 +352,74 @@
     });
     dataLayerGroup.addLayer(origLine);
 
-    // 2. Turf.js でスプライン補正（カトマルローンスプライン曲線化）
     try {
-      const lineString = turf.lineString(turfCoords);
-      // Bézierスプライン曲線で曲がり角のノイズを丸めて道路に沿わせる
-      const curved = turf.bezierSpline(lineString, { resolution: 10000, sharpness: 0.85 });
+      statusMsg.innerText = 'OSRMで経路を補正中...';
 
-      // GeoJSON [lon, lat] から Leaflet [lat, lon] へ変換
-      const smoothedLatLngs = curved.geometry.coordinates.map(c => [c[1], c[0]]);
+      // 1. Turf.jsを用いて進行方向の転換点（曲がり角）を抽出
+      const keyPoints = [turfCoords[0]];
+      let lastBearing = turf.bearing(turf.point(turfCoords[0]), turf.point(turfCoords[1]));
 
-      const smoothedPolyline = L.polyline(smoothedLatLngs, {
-        color: '#16a085', weight: 6, opacity: 0.9, fill: false
-      });
+      for (let i = 1; i < turfCoords.length - 1; i++) {
+        const p1 = turf.point(turfCoords[i]);
+        const p2 = turf.point(turfCoords[i+1]);
+        const currentBearing = turf.bearing(p1, p2);
+        
+        // 角度の差分を計算（180度またぎを考慮）
+        let diff = Math.abs(currentBearing - lastBearing);
+        if (diff > 180) diff = 360 - diff;
+        
+        // 15度以上の進行方向の変化があれば転換点とみなす
+        if (diff > 15) {
+          keyPoints.push(turfCoords[i]);
+          lastBearing = currentBearing;
+        }
+      }
+      keyPoints.push(turfCoords[turfCoords.length - 1]);
 
-      dataLayerGroup.addLayer(smoothedPolyline);
-      map.fitBounds(smoothedPolyline.getBounds(), { padding: [30, 30] });
+      // 2. OSRM API制約（通常100座標まで）の回避措置
+      const MAX_OSRM_POINTS = 90;
+      let targetPoints = keyPoints;
+      if (keyPoints.length > MAX_OSRM_POINTS) {
+        // 間引き処理: 均等にポイントを抽出
+        const step = Math.ceil(keyPoints.length / MAX_OSRM_POINTS);
+        targetPoints = keyPoints.filter((_, idx) => idx % step === 0);
+        // 終点が欠損しないよう末尾を保証
+        if (targetPoints[targetPoints.length - 1] !== keyPoints[keyPoints.length - 1]) {
+          targetPoints.push(keyPoints[keyPoints.length - 1]);
+        }
+      }
+
+      // 3. OSRM Map Matching APIへのリクエスト (footプロファイルを使用)
+      const coordsString = targetPoints.map(c => c.join(',')).join(';');
+      const osrmUrl = `https://router.project-osrm.org/match/v1/foot/${coordsString}?overview=full&geometries=geojson&radiuses=${targetPoints.map(() => 20).join(';')}`;
+
+      const osrmResponse = await fetch(osrmUrl);
+      const osrmData = await osrmResponse.json();
+
+      if (osrmData.code === 'Ok' && osrmData.matchings && osrmData.matchings.length > 0) {
+        // マッチング結果（GeoJSON形式）をLeaflet形式 [lat, lon] に変換して描画
+        const matchedGeom = osrmData.matchings[0].geometry;
+        const matchedLatLngs = matchedGeom.coordinates.map(c => [c[1], c[0]]);
+
+        const matchedPolyline = L.polyline(matchedLatLngs, {
+          color: '#16a085', weight: 6, opacity: 0.9, fill: false
+        });
+        dataLayerGroup.addLayer(matchedPolyline);
+        map.fitBounds(matchedPolyline.getBounds(), { padding: [30, 30] });
+        statusMsg.innerText = '';
+      } else {
+        throw new Error('OSRMによるマッチング結果が得られませんでした。');
+      }
 
     } catch (e) {
-      console.error('Turf smoothing error:', e);
+      console.error('OSRM matching error:', e);
+      statusMsg.innerText = '経路マッチングに失敗したため、通常描画を行います。';
       renderCourseData(data); // エラー時は通常表示へフォールバック
     }
 
     renderBarriers(data.barriers);
   }
 
-  // バリアピン描画の共通関数
   function renderBarriers(barriers) {
     if (barriers && barriers.length > 0) {
       barriers.forEach(b => {
@@ -324,7 +433,6 @@
     }
   }
 
-  // 生データ描画
   function renderRawData(data) {
     if (!data.raw_logs) return;
     const latLngs = [];
@@ -333,7 +441,6 @@
         latLngs.push([log.lat, log.lon]);
       }
     });
-
     if (latLngs.length > 0) {
       const rawPolyline = L.polyline(latLngs, {
         color: '#8e44ad', weight: 3, opacity: 0.8, fill: false, fillOpacity: 0.0
@@ -345,15 +452,23 @@
 
   document.getElementById('btn-load').addEventListener('click', loadData);
   fetchTripList();
+  
+  // 初期ロード時にもロガーを表示
+  loadSensorLoggers();
 
   const legend = L.control({ position: 'bottomright' });
   legend.onAdd = function () {
     const div = L.DomUtil.create('div', 'legend');
     div.innerHTML += '<b>表示凡例</b><br>';
     div.innerHTML += '<i style="background: #2980b9;"></i>通常ルート (青)<br>';
-    div.innerHTML += '<i style="background: #16a085;"></i>★ スプライン補正ルート (緑)<br>';
+    div.innerHTML += '<i style="background: #16a085;"></i>★ OSRM補正ルート (緑)<br>';
     div.innerHTML += '<i style="background: #8e44ad;"></i>生データライン (紫)<br>';
     div.innerHTML += '<i style="background: #e74c3c;"></i>バリア / 元GPS軌跡<br>';
+    div.innerHTML += '<hr style="margin: 5px 0; border: 0; border-top: 1px solid #ccc;">';
+    div.innerHTML += '<b>センサー (1H以内)</b><br>';
+    div.innerHTML += '<i style="background: #e74c3c; border-radius: 50%;"></i>35度超 (赤)<br>';
+    div.innerHTML += '<i style="background: #f39c12; border-radius: 50%;"></i>30度超 (オレンジ)<br>';
+    div.innerHTML += '<i style="background: #00bcd4; border-radius: 50%;"></i>安全域 (水色)<br>';
     return div;
   };
   legend.addTo(map);
