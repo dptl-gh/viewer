@@ -141,7 +141,7 @@
 
 <script>
   const SUPABASE_URL = '__SUPABASE_URL__';
-  const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
+  const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__'; // ※必ず正しいanonキーに置き換えてください
   const BASE_URL = `${SUPABASE_URL}/functions/v1/get-viewer-data`;
   const REST_URL = `${SUPABASE_URL}/rest/v1`;
 
@@ -220,32 +220,33 @@
   // 環境センサー（熱中症ロガー）データの取得と描画
   async function loadSensorLoggers() {
     loggerLayerGroup.clearLayers();
-    if (SUPABASE_URL.startsWith('__')) return;
+    if (SUPABASE_URL.startsWith('__') || SUPABASE_ANON_KEY.startsWith('__')) return;
 
     try {
       const response = await fetch(`${REST_URL}/device_current_status?select=*`, {
         headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY }
       });
-      if (!response.ok) throw new Error('センサーデータの取得に失敗');
-      const devices = await response.json();
       
+      if (!response.ok) {
+        if (response.status === 401) throw new Error('認証エラー (401): RLS設定またはAPIキーを確認してください。');
+        throw new Error(`センサーデータの取得に失敗 (${response.status})`);
+      }
+      
+      const devices = await response.json();
       const now = new Date().getTime();
       const ONE_HOUR_MS = 60 * 60 * 1000;
 
       devices.forEach(device => {
         const logTime = new Date(device.jst).getTime();
-        
-        // 最終更新から1時間以上経過している場合はスキップ
         if ((now - logTime) > ONE_HOUR_MS) return;
 
-        let markerColor = '#00bcd4'; // 水色 (デフォルト)
+        let markerColor = '#00bcd4';
         if (device.temperature > 35) {
-          markerColor = '#e74c3c'; // 赤
+          markerColor = '#e74c3c';
         } else if (device.temperature > 30) {
-          markerColor = '#f39c12'; // オレンジ
+          markerColor = '#f39c12';
         }
 
-        // ロガー専用のひし形（ダイヤ型）アイコンを生成
         const loggerIcon = L.divIcon({
           className: 'custom-logger-icon',
           html: `<div style="width: 14px; height: 14px; background-color: ${markerColor}; border: 2px solid #fff; transform: rotate(45deg); box-shadow: 1px 1px 3px rgba(0,0,0,0.5);"></div>`,
@@ -253,12 +254,9 @@
           iconAnchor: [9, 9]
         });
 
-        const marker = L.marker([device.lat, device.lon], {
-          icon: loggerIcon,
-          zIndexOffset: 1000
-        });
-
+        const marker = L.marker([device.lat, device.lon], { icon: loggerIcon, zIndexOffset: 1000 });
         const jstString = new Date(device.jst).toLocaleString('ja-JP');
+        
         marker.bindTooltip(
           `<b>${device.device_name || device.device_id}</b><br>時刻: ${jstString}<br>気温: <span style="color:${markerColor};">${device.temperature}℃</span>`,
           { className: 'sensor-tooltip', direction: 'top' }
@@ -285,7 +283,6 @@
     dataLayerGroup.clearLayers();
     statusMsg.innerText = 'データを取得中...';
 
-    // データの再読み込みと同時にロガーも更新する
     if (chkShowLoggers.checked) loadSensorLoggers();
 
     try {
@@ -310,7 +307,6 @@
           renderCourseData(json);
         }
         
-        // スタート地点とゴール地点のマーカーを描画
         renderStartEndMarkers(json);
       }
     } catch (err) {
@@ -335,7 +331,7 @@
     renderBarriers(data.barriers);
   }
 
-  // Turf.jsによる転換点抽出とOSRM Map Matching APIでの補正
+  // Turf.jsによる転換点抽出とOSRM Map Matching APIでの補正 (重複座標フィルタリング追加)
   async function renderOSRMMatchedData(data) {
     const statusMsg = document.getElementById('status-msg');
 
@@ -363,24 +359,43 @@
     try {
       statusMsg.innerText = 'OSRMで経路を補正中...';
 
-      const keyPoints = [turfCoords[0]];
-      let lastBearing = turf.bearing(turf.point(turfCoords[0]), turf.point(turfCoords[1]));
+      // 1. 同一座標および3メートル未満の微細なGPSブレを除外するフィルタリング
+      const cleanCoords = [turfCoords[0]];
+      for (let i = 1; i < turfCoords.length; i++) {
+        const p1 = turf.point(cleanCoords[cleanCoords.length - 1]);
+        const p2 = turf.point(turfCoords[i]);
+        const dist = turf.distance(p1, p2, { units: 'meters' });
+        
+        // 3m以上移動しているポイントのみ採用（OSRMの400エラー対策）
+        if (dist > 3) {
+          cleanCoords.push(turfCoords[i]);
+        }
+      }
 
-      for (let i = 1; i < turfCoords.length - 1; i++) {
-        const p1 = turf.point(turfCoords[i]);
-        const p2 = turf.point(turfCoords[i+1]);
+      if (cleanCoords.length < 2) {
+        throw new Error('ノイズ除去後、補正に必要な移動ポイントが不足しています。');
+      }
+
+      // 2. 進行方向による転換点の抽出
+      const keyPoints = [cleanCoords[0]];
+      let lastBearing = turf.bearing(turf.point(cleanCoords[0]), turf.point(cleanCoords[1]));
+
+      for (let i = 1; i < cleanCoords.length - 1; i++) {
+        const p1 = turf.point(cleanCoords[i]);
+        const p2 = turf.point(cleanCoords[i+1]);
         const currentBearing = turf.bearing(p1, p2);
         
         let diff = Math.abs(currentBearing - lastBearing);
         if (diff > 180) diff = 360 - diff;
         
         if (diff > 15) {
-          keyPoints.push(turfCoords[i]);
+          keyPoints.push(cleanCoords[i]);
           lastBearing = currentBearing;
         }
       }
-      keyPoints.push(turfCoords[turfCoords.length - 1]);
+      keyPoints.push(cleanCoords[cleanCoords.length - 1]);
 
+      // 3. OSRM APIのポイント数上限対策
       const MAX_OSRM_POINTS = 90;
       let targetPoints = keyPoints;
       if (keyPoints.length > MAX_OSRM_POINTS) {
