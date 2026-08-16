@@ -116,13 +116,6 @@
     </div>
 
     <div class="control-group">
-      <label class="checkbox-label">
-        <input type="checkbox" id="chk-show-loggers" checked>
-        <span>🌡 熱中症ロガー表示</span>
-      </label>
-    </div>
-
-    <div class="control-group">
       <label for="mode-select"><strong>対象ルート:</strong></label>
       <select id="mode-select">
         <option value="">コース一覧を取得中...</option>
@@ -163,7 +156,6 @@
   const dataTypeSelect = document.getElementById('datatype-select');
   const chkOsmMatch = document.getElementById('chk-osm-match');
   const osmMatchWrapper = document.getElementById('osm-match-wrapper');
-  const chkShowLoggers = document.getElementById('chk-show-loggers');
 
   function updateUIState() {
     if (dataTypeSelect.value === 'cleansed') {
@@ -178,14 +170,6 @@
 
   dataTypeSelect.addEventListener('change', updateUIState);
   updateUIState();
-
-  chkShowLoggers.addEventListener('change', () => {
-    if (chkShowLoggers.checked) {
-      loadSensorLoggers();
-    } else {
-      loggerLayerGroup.clearLayers();
-    }
-  });
 
   async function fetchTripList() {
     const selectElem = document.getElementById('mode-select');
@@ -217,7 +201,7 @@
     }
   }
 
-  // 環境センサー（熱中症ロガー）データの取得と描画
+  // 環境センサー（熱中症ロガー）データの取得と描画 (常に表示する)
   async function loadSensorLoggers() {
     loggerLayerGroup.clearLayers();
     if (SUPABASE_URL.startsWith('__') || SUPABASE_ANON_KEY.startsWith('__')) return;
@@ -240,17 +224,16 @@
         const logTime = new Date(device.jst).getTime();
         const isOutdated = (now - logTime) > TWO_HOURS_MS;
 
-        let markerColor = '#00bcd4'; // デフォルト: 水色
+        let markerColor = '#00bcd4';
         let borderColor = '#fff';
 
-        // 優先順位に従って判定
         if (isOutdated) {
-          markerColor = '#ffffff'; // 白抜き背景
-          borderColor = '#7f8c8d'; // グレー枠線で白抜きを表現
+          markerColor = '#ffffff';
+          borderColor = '#7f8c8d';
         } else if (device.temperature >= 35) {
-          markerColor = '#e74c3c'; // 赤
+          markerColor = '#e74c3c';
         } else if (device.temperature >= 30) {
-          markerColor = '#f39c12'; // オレンジ
+          markerColor = '#f39c12';
         }
 
         const loggerIcon = L.divIcon({
@@ -292,7 +275,8 @@
     dataLayerGroup.clearLayers();
     statusMsg.innerText = 'データを取得中...';
 
-    if (chkShowLoggers.checked) loadSensorLoggers();
+    // データの再読み込みと同時にロガーも更新し、常に表示させる
+    loadSensorLoggers();
 
     try {
       if (dataType === 'raw') {
@@ -302,6 +286,7 @@
         const json = await response.json();
         statusMsg.innerText = '';
         renderRawData(json);
+        renderStartEndMarkers(json); // 生データでもS/Gマーカーを描画
       } 
       else if (dataType === 'cleansed') {
         const response = await fetch(`${BASE_URL}?mode=course&trip_id=${tripId}`, {
@@ -316,7 +301,7 @@
           renderCourseData(json);
         }
         
-        renderStartEndMarkers(json);
+        renderStartEndMarkers(json); // クレンジングデータでもS/Gマーカーを描画
       }
     } catch (err) {
       console.error(err);
@@ -455,11 +440,24 @@
     }
   }
 
+  // 生データとクレンジングデータの両方に対応したスタート・ゴール地点描画
   function renderStartEndMarkers(data) {
-    if (!data.route || data.route.length === 0) return;
+    let startPt = null;
+    let endPt = null;
 
-    const startPt = data.route[0].coordinates;
-    const endPt = data.route[data.route.length - 1].coordinates;
+    if (data.route && data.route.length > 0) {
+      startPt = data.route[0].coordinates;
+      endPt = data.route[data.route.length - 1].coordinates;
+    } else if (data.raw_logs && data.raw_logs.length > 0) {
+      // 生データの場合は有効なGPSステータスの配列から両端を取得する
+      const validLogs = data.raw_logs.filter(log => log.gps_status === 'FIX' && log.lat > 20 && log.lon > 120);
+      if (validLogs.length > 0) {
+        startPt = [validLogs[0].lat, validLogs[0].lon];
+        endPt = [validLogs[validLogs.length - 1].lat, validLogs[validLogs.length - 1].lon];
+      }
+    }
+
+    if (!startPt || !endPt) return;
 
     const createLabelIcon = (text, bgColor) => L.divIcon({
       className: 'custom-label-icon',
@@ -497,6 +495,7 @@
   document.getElementById('btn-load').addEventListener('click', loadData);
   fetchTripList();
   
+  // 初回起動時にもロガーを表示
   loadSensorLoggers();
 
   const legend = L.control({ position: 'bottomright' });
