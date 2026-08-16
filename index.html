@@ -139,7 +139,6 @@
   const SUPABASE_URL = '__SUPABASE_URL__';
   const SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__'; 
   const BASE_URL = `${SUPABASE_URL}/functions/v1/get-viewer-data`;
-  const REST_URL = `${SUPABASE_URL}/rest/v1`;
 
   // マップ初期化
   const map = L.map('map').setView([33.5895, 130.3990], 16);
@@ -212,8 +211,8 @@
     if (SUPABASE_URL.startsWith('__') || SUPABASE_ANON_KEY.startsWith('__')) return;
 
     try {
-      // ※ここにヘッダーが確実に付与されています
-      const response = await fetch(`${REST_URL}/device_current_status?select=*`, {
+      // REST APIではなく、Edge Function経由で取得するように変更
+      const response = await fetch(`${BASE_URL}?mode=loggers`, {
         headers: { 
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 
           'apikey': SUPABASE_ANON_KEY 
@@ -221,7 +220,6 @@
       });
       
       if (!response.ok) {
-        if (response.status === 401) throw new Error('認証エラー (401): APIキーの文字列、またはRLS/GRANT設定を確認してください。');
         throw new Error(`センサーデータの取得に失敗 (${response.status})`);
       }
       
