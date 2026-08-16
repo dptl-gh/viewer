@@ -233,13 +233,8 @@
       }
       
       const devices = await response.json();
-      const now = new Date().getTime();
-      const ONE_HOUR_MS = 60 * 60 * 1000;
 
       devices.forEach(device => {
-        const logTime = new Date(device.jst).getTime();
-        if ((now - logTime) > ONE_HOUR_MS) return;
-
         let markerColor = '#00bcd4';
         if (device.temperature > 35) {
           markerColor = '#e74c3c';
@@ -366,7 +361,6 @@
         const p2 = turf.point(turfCoords[i]);
         const dist = turf.distance(p1, p2, { units: 'meters' });
         
-        // 3m以上移動しているポイントのみ採用（OSRMの400エラー対策）
         if (dist > 3) {
           cleanCoords.push(turfCoords[i]);
         }
@@ -507,7 +501,7 @@
     div.innerHTML += '<i style="background: #2ecc71; border: 1px solid #ccc;"></i>S スタート地点<br>';
     div.innerHTML += '<i style="background: #e74c3c; border: 1px solid #ccc;"></i>G ゴール地点<br>';
     div.innerHTML += '<hr style="margin: 5px 0; border: 0; border-top: 1px solid #ccc;">';
-    div.innerHTML += '<b>センサー (1H以内)</b><br>';
+    div.innerHTML += '<b>センサー</b><br>';
     div.innerHTML += '<i style="background: #e74c3c; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>35度超 (赤)<br>';
     div.innerHTML += '<i style="background: #f39c12; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>30度超 (オレンジ)<br>';
     div.innerHTML += '<i style="background: #00bcd4; border-radius: 0; transform: rotate(45deg); margin: 2px 8px 2px 2px;"></i>安全域 (水色)<br>';
